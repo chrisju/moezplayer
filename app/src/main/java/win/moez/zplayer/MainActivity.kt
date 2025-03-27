@@ -2,18 +2,18 @@ package win.moez.zplayer
 
 import android.Manifest
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
@@ -28,13 +28,24 @@ import kotlinx.coroutines.*
 import okhttp3.*
 import org.json.JSONArray
 import java.io.*
-import java.util.*
 
 class MainActivity : ComponentActivity() {
+
+    private lateinit var pickVideoLauncher: ActivityResultLauncher<String>
+    internal var videoUri by mutableStateOf<Uri?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            uri?.let {
+                // 处理选中的视频文件
+                println("Selected video URI: $it")
+                videoUri = it
+            }
+        }
         setContent {
-            VideoPlayerApp()
+            VideoPlayerApp(this, pickVideoLauncher)
         }
 
         // Request permissions
@@ -69,24 +80,27 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+
+
 @Composable
-fun VideoPlayerApp() {
-    var videoUri by remember { mutableStateOf<Uri?>(null) }
-    val context = LocalContext.current
+fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResultLauncher<String>) {
+    val context = mainActivity.baseContext
     val player = remember { ExoPlayer.Builder(context).build() }
     var subtitleProgress by remember { mutableStateOf("未开始") }
     var subtitlePath by remember { mutableStateOf<String?>(null) }
 
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
         // 选择本地视频
-        Button(onClick = { videoUri = selectVideo(context) }) {
+        Button(onClick = {
+            pickVideoLauncher.launch("video/*")
+        }) {
             Text("选择本地视频")
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
         // 播放在线视频
-        Button(onClick = { videoUri = Uri.parse("https://stream7.iqilu.com/10339/upload_transcode/202002/09/20200209105011F0zPoYzHry.mp4") }) {
+        Button(onClick = { mainActivity.videoUri = Uri.parse("https://stream7.iqilu.com/10339/upload_transcode/202002/09/20200209105011F0zPoYzHry.mp4") }) {
             Text("播放在线视频")
         }
 
@@ -96,7 +110,7 @@ fun VideoPlayerApp() {
         Text(text = "字幕生成进度: $subtitleProgress", modifier = Modifier.padding(8.dp))
 
         // ExoPlayer 播放器
-        videoUri?.let { uri ->
+        mainActivity.videoUri?.let { uri ->
             LaunchedEffect(uri) {
                 player.setMediaItem(MediaItem.fromUri(uri))
                 player.prepare()
@@ -126,13 +140,6 @@ fun getAppSpecificFile(context: android.content.Context, fileName: String): File
     val appSpecificDir = context.getExternalFilesDir(null)
     // 创建文件路径
     return File(appSpecificDir, fileName)
-}
-
-// 选择本地视频（未实现文件选择器，可扩展）
-private fun selectVideo(context: android.content.Context): Uri? {
-    val intent = Intent(Intent.ACTION_GET_CONTENT).apply { type = "video/*" }
-    context.startActivity(Intent.createChooser(intent, "选择视频文件"))
-    return null
 }
 
 // 提取音频 & 识别字幕

@@ -90,4 +90,7 @@ dependencies {
     // Google Translate API（OkHttp 用于 HTTP 请求）
     implementation("com.squareup.okhttp3:okhttp:4.9.3")
 
+
+    implementation("androidx.activity:activity-ktx:1.6.0")
+    implementation("androidx.fragment:fragment-ktx:1.5.0")
 }
