@@ -49,6 +49,7 @@ android {
     }
 }
 
+
 dependencies {
 
     implementation(libs.androidx.core.ktx)
@@ -66,4 +67,25 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+
+    // Media3 ExoPlayer
+    implementation("androidx.media3:media3-exoplayer:1.2.0")
+    implementation("androidx.media3:media3-ui:1.2.0")
+
+    // Jetpack Compose 依赖
+    implementation("androidx.activity:activity-compose:1.7.0")
+    implementation("androidx.compose.ui:ui:1.7.0")
+    implementation("androidx.compose.material3:material3:1.1.2")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
+    implementation("androidx.compose.runtime:runtime:1.7.0")
+
+    // FFmpegKit 最新版本（6.0-2.LTS）
+    implementation("com.arthenica:ffmpeg-kit-min:6.0-2.LTS")
+
+    // Google Cloud Speech-to-Text API
+    implementation("com.google.cloud:google-cloud-speech:4.8.0")
+
+    // Google Translate API（OkHttp 用于 HTTP 请求）
+    implementation("com.squareup.okhttp3:okhttp:4.9.3")
+
 }

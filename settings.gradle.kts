@@ -9,13 +9,17 @@ pluginManagement {
         }
         mavenCentral()
         gradlePluginPortal()
+
     }
 }
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
     repositories {
         google()
         mavenCentral()
+        maven { url = uri("https://maven.arthenica.com/public") }
+//        maven { url = uri("https://maven-central.storage.googleapis.com/maven2/") }
+//        maven { url = uri("https://maven.aliyun.com/repository/central") }
     }
 }
 
