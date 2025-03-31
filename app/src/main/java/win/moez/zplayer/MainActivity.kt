@@ -10,26 +10,56 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.arthenica.ffmpegkit.FFmpegKit
-import com.google.cloud.speech.v1.*
+import com.google.api.gax.core.FixedCredentialsProvider
+import com.google.auth.oauth2.GoogleCredentials
+import com.google.cloud.speech.v1.RecognitionAudio
+import com.google.cloud.speech.v1.RecognitionConfig
+import com.google.cloud.speech.v1.RecognizeRequest
+import com.google.cloud.speech.v1.SpeechClient
+import com.google.cloud.speech.v1.SpeechSettings
 import com.google.protobuf.ByteString
-import kotlinx.coroutines.*
-import okhttp3.*
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
-import java.io.*
+import java.io.BufferedWriter
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.FileWriter
+import java.io.InputStream
+import java.io.OutputStreamWriter
+import java.net.MalformedURLException
+import java.net.URL
 import java.nio.charset.StandardCharsets
-import androidx.core.net.toUri
+
 
 class MainActivity : ComponentActivity() {
 
@@ -97,7 +127,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                 player.setMediaItem(MediaItem.fromUri(uri))
                 player.prepare()
                 player.play()
-                extractAndProcessAudio(context, uri.toString()) { path, progress ->
+                extractAndProcessAudio(context, uri) { path, progress ->
                     subtitleProgress += progress
                     subtitlePath = path
                     path?.let { loadSubtitle(player, it) }
@@ -105,7 +135,9 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
             }
 
             AndroidView(
-                modifier = Modifier.fillMaxWidth().height(200.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp),
                 factory = { ctx ->
                     PlayerView(ctx).apply {
                         this.player = player
@@ -124,19 +156,24 @@ fun getAppSpecificFile(context: Context, fileName: String): File {
 @OptIn(DelicateCoroutinesApi::class)
 fun extractAndProcessAudio(
     context: Context,
-    videoPath: String,
+    videoUri: Uri,
     onProgress: (String?, String) -> Unit
 ) {
-    val outputFile = getAppSpecificFile(context, "output.wav")
+    val outputFilePath = getAppSpecificFile(context, "output.wav").toString()
+    val credentialsStream: InputStream = context.resources.openRawResource(R.raw.a2t)
+    val credentials = GoogleCredentials.fromStream(credentialsStream)
 
     GlobalScope.launch(Dispatchers.IO) {
         try {
+            onProgress(null, "准备视频中...")
+            val videoPath = getVideoFile(context, videoUri).toString()
+
             onProgress(null, "提取音频中...")
-            val command = "-i $videoPath -vn -acodec pcm_s16le -ar 16000 -ac 1 $outputFile"
+            val command = "-i $videoPath -vn -acodec pcm_s16le -ar 16000 -ac 1 $outputFilePath"
             FFmpegKit.execute(command)
 
             onProgress(null, "识别字幕中...")
-            val transcriptFile = recognizeSpeech(outputFile)
+            val transcriptFile = recognizeSpeech(outputFilePath, credentials)
 
             onProgress(null, "翻译字幕中...")
             val subtitlePath = translateSubtitleFile(context, transcriptFile).toString()
@@ -148,9 +185,13 @@ fun extractAndProcessAudio(
     }
 }
 
-fun recognizeSpeech(audioFile: File): File {
-    val speechClient = SpeechClient.create()
-    val srtFile = File(audioFile.parent, "subtitles.srt")
+fun recognizeSpeech(audioFile: String, credentials: GoogleCredentials): File {
+
+    // 加载服务账号密钥文件
+    val settings = SpeechSettings.newBuilder()
+        .setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build()
+    val speechClient = SpeechClient.create(settings)
+    val srtFile = File(File(audioFile).parent, "subtitles.srt")
     val writer = BufferedWriter(OutputStreamWriter(FileOutputStream(srtFile), StandardCharsets.UTF_8))
 
     val response = speechClient.recognize(
@@ -159,8 +200,9 @@ fun recognizeSpeech(audioFile: File): File {
                 RecognitionConfig.newBuilder()
                     .setEncoding(RecognitionConfig.AudioEncoding.LINEAR16)
                     .setSampleRateHertz(16000)
-                    .setLanguageCode("ja-JP") // 主要语言：日文
-                    .addAllAlternativeLanguageCodes(listOf("en-US", "zh-CN")) // 备用语言：英文和中文
+                    .setLanguageCode("zh-CN") // 主要语言：日文
+//                    .setLanguageCode("ja-JP") // 主要语言：日文
+//                    .addAllAlternativeLanguageCodes(listOf("en-US", "zh-CN")) // 备用语言：英文和中文
                     .setEnableWordTimeOffsets(true)
                     .build()
             )
@@ -196,9 +238,9 @@ fun translateSubtitleFile(context: Context, srtFile: File): File {
     val translatedFile = getAppSpecificFile(context, "translated.srt")
     val translatedWriter = BufferedWriter(FileWriter(translatedFile))
 
-    // 整体翻译
+    // TODO 整体翻译
     srtFile.forEachLine { line ->
-        if (line.matches(Regex("\\d+")) || line.contains("-->")) {
+        if (true || line.matches(Regex("\\d+")) || line.contains("-->")) {
             translatedWriter.write(line + "\n")
         } else {
             translatedWriter.write(line + "\n")
@@ -225,4 +267,78 @@ fun loadSubtitle(player: ExoPlayer, subtitlePath: String) {
         player.currentMediaItem!!.buildUpon().setSubtitleConfigurations(listOf(subtitleConfig)).build()
     )
     player.prepare()
+}
+
+fun copyUriToFile(context: Context, uri: Uri, outputFile: File): File? {
+    return try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(outputFile).use { output ->
+                input.copyTo(output)
+            }
+        }
+        outputFile
+    } catch (e: Exception) {
+        Log.e("FFmpegKit", "Failed to copy URI", e)
+        null
+    }
+}
+
+fun downloadVideo(context: Context, uri: Uri, outputFile: File): File? {
+    return try {
+        val request = Request.Builder().url(uri.toString()).build()
+        val response = OkHttpClient().newCall(request).execute()
+
+        response.body?.byteStream()?.use { input ->
+            FileOutputStream(outputFile).use { output ->
+                input.copyTo(output)
+            }
+        }
+        outputFile
+    } catch (e: Exception) {
+        Log.e("FFmpegKit", "Failed to download video", e)
+        null
+    }
+}
+
+fun isUrl(uri: String): Boolean {
+    return try {
+        URL(uri)
+        true
+    } catch (e: MalformedURLException) {
+        false
+    }
+}
+
+fun getFileName(context: Context, uri: Uri): String? {
+    var fileName: String? = null
+    when (uri.scheme) {
+        "content" -> {
+            uri.toString().split("/").lastOrNull()
+        }
+        "file" -> {
+            fileName = File(uri.path).name
+        }
+        "http", "https" -> {
+            try {
+                val url = URL(uri.toString())
+                fileName = url.path.substring(url.path.lastIndexOf('/') + 1)
+            } catch (e: MalformedURLException) {
+                Log.e("FFmpegKit", "Invalid URL", e)
+            }
+        }
+    }
+    return fileName
+}
+
+fun getVideoFile(context: Context, uri: Uri): File? {
+    val fileName = getFileName(context, uri)?: "default_filename.mp4"
+    return if (uri.toString().startsWith("content://")) {
+        copyUriToFile(context, uri, getAppSpecificFile(context, fileName))
+    } else if (isUrl(uri.toString())) {
+        downloadVideo(context, uri, getAppSpecificFile(context, fileName))
+    } else if (File(uri.toString()).exists()) {
+        File(uri.toString())
+    } else {
+        null
+    }
 }

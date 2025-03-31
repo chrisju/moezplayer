@@ -86,14 +86,17 @@ dependencies {
     implementation("com.arthenica:ffmpeg-kit-min:6.0-2.LTS")
 
     // Google Cloud Speech-to-Text API
-    implementation("com.google.cloud:google-cloud-speech:4.8.0")
+    implementation(libs.google.cloud.speech)
 
     // Google Translate API（OkHttp 用于 HTTP 请求）
-    implementation("com.squareup.okhttp3:okhttp:4.9.3")
+    implementation(libs.okhttp)
 
 
     implementation("androidx.activity:activity-ktx:1.6.0")
     implementation("androidx.fragment:fragment-ktx:1.5.0")
 
-
+    implementation("io.grpc:grpc-okhttp:1.64.0") // 适用于 Android
+    implementation("io.grpc:grpc-protobuf:1.64.0")
+    implementation("io.grpc:grpc-stub:1.64.0")
+    implementation("io.grpc:grpc-api:1.64.0")
 }
