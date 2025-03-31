@@ -29,6 +29,7 @@ import okhttp3.*
 import org.json.JSONArray
 import java.io.*
 import java.nio.charset.StandardCharsets
+import androidx.core.net.toUri
 
 class MainActivity : ComponentActivity() {
 
@@ -74,7 +75,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
     var subtitleProgress by remember { mutableStateOf("未开始") }
     var subtitlePath by remember { mutableStateOf<String?>(null) }
 
-    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Button(onClick = { pickVideoLauncher.launch("video/*") }) {
             Text("选择本地视频")
         }
@@ -82,7 +83,8 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
         Spacer(modifier = Modifier.height(8.dp))
 
         // https://mirror.aarnet.edu.au/pub/TED-talks/911Mothers_2010W-480p.mp4
-        Button(onClick = { mainActivity.videoUri = Uri.parse("https://stream7.iqilu.com/10339/upload_transcode/202002/09/20200209105011F0zPoYzHry.mp4") }) {
+        Button(onClick = { mainActivity.videoUri =
+            "https://stream7.iqilu.com/10339/upload_transcode/202002/09/20200209105011F0zPoYzHry.mp4".toUri() }) {
             Text("播放在线视频")
         }
 
@@ -96,7 +98,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                 player.prepare()
                 player.play()
                 extractAndProcessAudio(context, uri.toString()) { path, progress ->
-                    subtitleProgress = progress
+                    subtitleProgress += progress
                     subtitlePath = path
                     path?.let { loadSubtitle(player, it) }
                 }
@@ -119,6 +121,7 @@ fun getAppSpecificFile(context: Context, fileName: String): File {
     return File(appSpecificDir, fileName)
 }
 
+@OptIn(DelicateCoroutinesApi::class)
 fun extractAndProcessAudio(
     context: Context,
     videoPath: String,
@@ -140,7 +143,7 @@ fun extractAndProcessAudio(
             onProgress(subtitlePath, "字幕已生成！")
         } catch (e: Exception) {
             Log.e("SubtitleError", "字幕处理失败", e)
-            onProgress(null, "字幕生成失败")
+            onProgress(null, "字幕生成失败:$e")
         }
     }
 }
@@ -193,6 +196,7 @@ fun translateSubtitleFile(context: Context, srtFile: File): File {
     val translatedFile = getAppSpecificFile(context, "translated.srt")
     val translatedWriter = BufferedWriter(FileWriter(translatedFile))
 
+    // 整体翻译
     srtFile.forEachLine { line ->
         if (line.matches(Regex("\\d+")) || line.contains("-->")) {
             translatedWriter.write(line + "\n")
@@ -214,7 +218,7 @@ fun translateText(text: String): String {
 }
 
 fun loadSubtitle(player: ExoPlayer, subtitlePath: String) {
-    val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(Uri.parse(subtitlePath))
+    val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(subtitlePath.toUri())
         .setMimeType("application/x-subrip")
         .build()
     player.setMediaItem(
