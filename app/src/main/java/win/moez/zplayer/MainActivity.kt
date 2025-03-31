@@ -81,6 +81,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        // https://mirror.aarnet.edu.au/pub/TED-talks/911Mothers_2010W-480p.mp4
         Button(onClick = { mainActivity.videoUri = Uri.parse("https://stream7.iqilu.com/10339/upload_transcode/202002/09/20200209105011F0zPoYzHry.mp4") }) {
             Text("播放在线视频")
         }
