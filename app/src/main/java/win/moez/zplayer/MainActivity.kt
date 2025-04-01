@@ -57,14 +57,16 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import okhttp3.Request
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.FileWriter
+import java.io.IOException
 import java.io.InputStream
 import java.net.MalformedURLException
 import java.net.URL
@@ -534,4 +536,68 @@ fun uploadAudioFile(filePath: String, credentials: GoogleCredentials): String {
     val fileUri = "gs://$your_bucket_name/$fileName"
     Log.d("Upload", "File uploaded to: $fileUri")
     return fileUri
+}
+
+private val apiKey = "YOUR_GOOGLE_CLOUD_API_KEY" // 使用你的 API 密钥
+private val client = OkHttpClient()
+
+fun splitTextIntoSentences(text: String, callback: (List<String>) -> Unit) {
+    // 创建请求 JSON 数据
+    val json = JSONObject()
+    json.put("document", JSONObject()
+        .put("type", "PLAIN_TEXT")
+        .put("content", text)
+    )
+    json.put("encodingType", "UTF8")
+
+    // 创建请求体
+    val requestBody = RequestBody.create(
+        "application/json".toMediaTypeOrNull(), json.toString()
+    )
+
+    // 创建 HTTP 请求
+    val request = Request.Builder()
+        .url("https://language.googleapis.com/v1/documents:analyzeSyntax?key=$apiKey")
+        .post(requestBody)
+        .build()
+
+    // 发送请求
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            e.printStackTrace()
+            callback(emptyList()) // 请求失败时返回空列表
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            if (response.isSuccessful) {
+                // 处理成功的响应
+                val responseBody = response.body?.string()
+                responseBody?.let {
+                    val sentences = parseSentences(it)
+                    callback(sentences)
+                }
+            } else {
+                callback(emptyList()) // 如果响应不成功，返回空列表
+            }
+        }
+    })
+}
+
+// 解析 API 返回的句子分割数据
+private fun parseSentences(response: String): List<String> {
+    val sentencesList = mutableListOf<String>()
+    try {
+        val jsonResponse = JSONObject(response)
+        val sentencesArray = jsonResponse.getJSONArray("sentences")
+
+        // 遍历每个句子并将其添加到列表
+        for (i in 0 until sentencesArray.length()) {
+            val sentence = sentencesArray.getJSONObject(i)
+            val sentenceText = sentence.getJSONObject("text").getString("content")
+            sentencesList.add(sentenceText)
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return sentencesList
 }
