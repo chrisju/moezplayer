@@ -44,6 +44,7 @@ import com.google.cloud.speech.v1.RecognizeRequest
 import com.google.cloud.speech.v1.SpeechClient
 import com.google.cloud.speech.v1.SpeechRecognitionResult
 import com.google.cloud.speech.v1.SpeechSettings
+import com.google.cloud.speech.v1.WordInfo
 import com.google.cloud.storage.BlobId
 import com.google.cloud.storage.BlobInfo
 import com.google.cloud.storage.StorageOptions
@@ -77,11 +78,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-            uri?.let {
-                videoUri = it
+        pickVideoLauncher =
+            registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+                uri?.let {
+                    videoUri = it
+                }
             }
-        }
         setContent {
             VideoPlayerApp(this, pickVideoLauncher)
         }
@@ -121,8 +123,10 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
         Spacer(modifier = Modifier.height(8.dp))
 
         // https://mirror.aarnet.edu.au/pub/TED-talks/911Mothers_2010W-480p.mp4
-        Button(onClick = { mainActivity.videoUri =
-            "https://stream7.iqilu.com/10339/upload_transcode/202002/09/20200209105011F0zPoYzHry.mp4".toUri() }) {
+        Button(onClick = {
+            mainActivity.videoUri =
+                "https://stream7.iqilu.com/10339/upload_transcode/202002/09/20200209105011F0zPoYzHry.mp4".toUri()
+        }) {
             Text("播放在线视频")
         }
 
@@ -136,9 +140,10 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                 player.prepare()
                 player.play()
                 extractAndProcessAudio(context, uri) { path, progress ->
+                    Log.d("progress", "extractAndProcessAudio:$progress")
                     subtitleProgress += progress
                     subtitlePath = path
-                    path?.let { loadSubtitle(player, it) }
+                    path?.let { mainActivity.runOnUiThread { loadSubtitle(player, it) } }
                 }
             }
 
@@ -174,7 +179,8 @@ fun extractAndProcessAudio(
     GlobalScope.launch(Dispatchers.IO) {
         try {
             onProgress(null, "准备视频中...")
-            val videoPath = getVideoFile(context, videoUri)?.toString() ?: throw IllegalArgumentException("无效的视频源")
+            val videoPath = getVideoFile(context, videoUri)?.toString()
+                ?: throw IllegalArgumentException("无效的视频源")
 
             onProgress(null, "提取音频中...")
             val command = "-i $videoPath -y -vn -acodec pcm_s16le -ar 16000 -ac 1 $localAudioPath"
@@ -189,56 +195,14 @@ fun extractAndProcessAudio(
 
             onProgress(null, "翻译字幕中...")
             val subtitlePath = translateSubtitleFile(context, transcriptFile).toString()
+            val s = File(subtitlePath).readText()
+            Log.d("translateSubtitleFile", s)
             onProgress(subtitlePath, "字幕已生成！")
         } catch (e: Exception) {
             Log.e("SubtitleError", "字幕处理失败", e)
             onProgress(null, "字幕生成失败:$e")
         }
     }
-}
-
-fun recognizeSpeech(audioFile: String, credentials: GoogleCredentials): File {
-
-    // 加载服务账号密钥文件
-    val settings = SpeechSettings.newBuilder()
-        .setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build()
-    val speechClient = SpeechClient.create(settings)
-    val srtFile = File(File(audioFile).parent, "subtitles.srt")
-    val writer = BufferedWriter(OutputStreamWriter(FileOutputStream(srtFile), StandardCharsets.UTF_8))
-
-    val response = speechClient.recognize(
-        RecognizeRequest.newBuilder()
-            .setConfig(
-                RecognitionConfig.newBuilder()
-                    .setEncoding(RecognitionConfig.AudioEncoding.LINEAR16)
-                    .setSampleRateHertz(16000)
-                    .setLanguageCode("zh-CN") // 主要语言：日文
-//                    .setLanguageCode("ja-JP") // 主要语言：日文
-//                    .addAllAlternativeLanguageCodes(listOf("en-US", "zh-CN")) // 备用语言：英文和中文
-                    .setEnableWordTimeOffsets(true)
-                    .build()
-            )
-            .setAudio(
-                RecognitionAudio.newBuilder()
-                    .setContent(ByteString.readFrom(FileInputStream(audioFile)))
-                    .build()
-            )
-            .build()
-    )
-
-    var index = 1
-    for (result in response.resultsList) {
-        val alternative = result.alternativesList[0]
-        val startTime = result.alternativesList[0].wordsList.first().startTime
-        val endTime = result.alternativesList[0].wordsList.last().endTime
-
-        writer.write("$index\n")
-        writer.write(formatTime(startTime) + " --> " + formatTime(endTime) + "\n")
-        writer.write(alternative.transcript + "\n\n")
-        index++
-    }
-    writer.close()
-    return srtFile
 }
 
 fun longRunningRecognize(context: Context, url: String, credentials: GoogleCredentials): File {
@@ -256,9 +220,9 @@ fun longRunningRecognize(context: Context, url: String, credentials: GoogleCrede
     val config = RecognitionConfig.newBuilder()
         .setEncoding(RecognitionConfig.AudioEncoding.LINEAR16)
         .setSampleRateHertz(16000)
-        .setLanguageCode("zh-CN") // 主要语言：日文
-//                    .setLanguageCode("ja-JP") // 主要语言：日文
-//                    .addAllAlternativeLanguageCodes(listOf("en-US", "zh-CN")) // 备用语言：英文和中文
+//        .setLanguageCode("zh-CN") // 主要语言：日文
+        .setLanguageCode("ja-JP") // 主要语言：日文
+        .addAllAlternativeLanguageCodes(listOf("en-US", "zh-CN")) // 备用语言：英文和中文
         .setEnableWordTimeOffsets(true)
         .build()
 
@@ -278,12 +242,18 @@ fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File) {
     val srtContent = StringBuilder()
     var index = 1
 
+    Log.d("generateSrtFile", "sub1 1: ${results.size}")
     for (result in results) {
+        Log.d("generateSrtFile", "sub1 2: ${result.alternativesList.size}")
         for (alternative in result.alternativesList) {
-            for (wordInfo in alternative.wordsList) {
-                val startTime = wordInfo.startTime
-                val endTime = wordInfo.endTime
-                val transcript = wordInfo.word
+            Log.d("generateSrtFile", "sub1 3: ${alternative.wordsList.size}")
+            val words = alternative.wordsList
+            val segments = splitWordsList(words)
+
+            for (segment in segments) {
+                val startTime = segment.first().startTime
+                val endTime = segment.last().endTime
+                val transcript = segment.joinToString(" ") { it.word }
 
                 srtContent.append("$index\n")
                 srtContent.append("${formatTime(startTime)} --> ${formatTime(endTime)}\n")
@@ -293,12 +263,90 @@ fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File) {
         }
     }
 
+    Log.d("generateSrtFile", "sub1: $srtContent")
     outputFile.writeText(srtContent.toString())
+}
+
+fun splitWordsList(words: List<WordInfo>): List<List<WordInfo>> {
+    val segments = mutableListOf<List<WordInfo>>()
+    var currentSegment = mutableListOf<WordInfo>()
+
+    var last : WordInfo? = null
+    for (i in words.indices) {
+        currentSegment.add(words[i])
+        last?.let {
+            val gap = subtractDurationsInMillis(words[i].startTime, words[i - 1].endTime)
+            Log.d("words", "gap of words[${i-1}] - words[$i](${words[i].word}):$gap ms")
+        }
+        last = words[i]
+    }
+
+    if (currentSegment.isNotEmpty()) {
+        segments.add(currentSegment)
+    }
+
+    return segments.flatMap { segment ->
+        if (segment.size > 100 || segment.last().endTime.seconds - segment.first().startTime.seconds > 5) {
+            splitLargeSegment(segment)
+        } else {
+            listOf(segment)
+        }
+    }
+}
+
+fun splitLargeSegment(segment: List<WordInfo>): List<List<WordInfo>> {
+    val segments = mutableListOf<List<WordInfo>>()
+    splitSegmentRecursively(segment, segments)
+    return segments
+}
+
+fun splitSegmentRecursively(segment: List<WordInfo>, segments: MutableList<List<WordInfo>>) {
+    if (segment.size <= 40 && (segment.last().endTime.seconds - segment.first().startTime.seconds) <= 5) {
+        segments.add(segment)
+    } else {
+        val splitIndex = findSplitIndex(segment)
+        if(splitIndex == 0){
+            segments.add(segment)
+        }else{
+            val firstPart = segment.subList(0, splitIndex)
+            val secondPart = segment.subList(splitIndex, segment.size)
+            splitSegmentRecursively(firstPart, segments)
+            splitSegmentRecursively(secondPart, segments)
+        }
+    }
+}
+
+fun findSplitIndex(segment: List<WordInfo>): Int {
+    var maxGap = 0L
+    var splitIndex = 0
+
+    for (i in 1 until segment.size) {
+        val gap = subtractDurationsInMillis(segment[i].startTime, segment[i - 1].endTime)
+        if (gap > maxGap) {
+            maxGap = gap
+            splitIndex = i
+        }
+    }
+
+    return splitIndex
+}
+
+fun subtractDurationsInMillis(duration1: com.google.protobuf.Duration, duration2: com.google.protobuf.Duration): Long {
+    val totalNanos1 = duration1.seconds * 1_000_000_000 + duration1.nanos
+    val totalNanos2 = duration2.seconds * 1_000_000_000 + duration2.nanos
+    val diffNanos = totalNanos1 - totalNanos2
+
+    return diffNanos / 1_000_000 // Convert nanoseconds to milliseconds
 }
 
 fun formatTime(duration: com.google.protobuf.Duration): String {
     val millis = duration.seconds * 1000 + duration.nanos / 1000000
-    return "%02d:%02d:%02d,%03d".format(millis / 3600000, millis / 60000 % 60, millis / 1000 % 60, millis % 1000)
+    return "%02d:%02d:%02d,%03d".format(
+        millis / 3600000,
+        millis / 60000 % 60,
+        millis / 1000 % 60,
+        millis % 1000
+    )
 }
 
 fun translateSubtitleFile(context: Context, srtFile: File): File {
@@ -307,7 +355,7 @@ fun translateSubtitleFile(context: Context, srtFile: File): File {
 
     // TODO 整体翻译
     srtFile.forEachLine { line ->
-        if (true || line.matches(Regex("\\d+")) || line.contains("-->")) {
+        if (line.matches(Regex("\\d+")) || line.contains("-->")) {
             translatedWriter.write(line + "\n")
         } else {
             translatedWriter.write(line + "\n")
@@ -319,7 +367,8 @@ fun translateSubtitleFile(context: Context, srtFile: File): File {
 }
 
 fun translateText(text: String): String {
-    val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh&dt=t&q=${text}"
+    val url =
+        "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh&dt=t&q=${text}"
     val request = Request.Builder().url(url).build()
     return OkHttpClient().newCall(request).execute().body!!.string().let { response ->
         JSONArray(response).getJSONArray(0).getJSONArray(0).getString(0)
@@ -331,7 +380,8 @@ fun loadSubtitle(player: ExoPlayer, subtitlePath: String) {
         .setMimeType("application/x-subrip")
         .build()
     player.setMediaItem(
-        player.currentMediaItem!!.buildUpon().setSubtitleConfigurations(listOf(subtitleConfig)).build()
+        player.currentMediaItem!!.buildUpon().setSubtitleConfigurations(listOf(subtitleConfig))
+            .build()
     )
     player.prepare()
 }
@@ -382,9 +432,11 @@ fun getFileName(context: Context, uri: Uri): String? {
         "content" -> {
             uri.toString().split("/").lastOrNull()
         }
+
         "file" -> {
             fileName = File(uri.path).name
         }
+
         "http", "https" -> {
             try {
                 val url = URL(uri.toString())
@@ -398,7 +450,7 @@ fun getFileName(context: Context, uri: Uri): String? {
 }
 
 fun getVideoFile(context: Context, uri: Uri): File? {
-    val fileName = getFileName(context, uri)?: "default_filename.mp4"
+    val fileName = getFileName(context, uri) ?: "default_filename.mp4"
     return if (uri.toString().startsWith("content://")) {
         copyUriToFile(context, uri, getAppSpecificFile(context, fileName))
     } else if (isUrl(uri.toString())) {
@@ -438,7 +490,7 @@ fun uploadAudioFile(filePath: String, credentials: GoogleCredentials): String {
     storage.create(blobInfo, Files.readAllBytes(file.toPath()))
 
     // 获取文件的URI
-    val fileUri = "https://storage.googleapis.com/$your_bucket_name/$fileName"
+    val fileUri = "gs://$your_bucket_name/$fileName"
     Log.d("Upload", "File uploaded to: $fileUri")
     return fileUri
 }
