@@ -34,13 +34,19 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.ReturnCode
 import com.google.api.gax.core.FixedCredentialsProvider
 import com.google.auth.oauth2.GoogleCredentials
+import com.google.cloud.speech.v1.LongRunningRecognizeRequest
 import com.google.cloud.speech.v1.RecognitionAudio
 import com.google.cloud.speech.v1.RecognitionConfig
 import com.google.cloud.speech.v1.RecognizeRequest
 import com.google.cloud.speech.v1.SpeechClient
+import com.google.cloud.speech.v1.SpeechRecognitionResult
 import com.google.cloud.speech.v1.SpeechSettings
+import com.google.cloud.storage.BlobId
+import com.google.cloud.storage.BlobInfo
+import com.google.cloud.storage.StorageOptions
 import com.google.protobuf.ByteString
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
@@ -59,7 +65,9 @@ import java.io.OutputStreamWriter
 import java.net.MalformedURLException
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 
+const val your_bucket_name = "moezplayer"
 
 class MainActivity : ComponentActivity() {
 
@@ -159,21 +167,25 @@ fun extractAndProcessAudio(
     videoUri: Uri,
     onProgress: (String?, String) -> Unit
 ) {
-    val outputFilePath = getAppSpecificFile(context, "output.wav").toString()
+    val localAudioPath = getAppSpecificFile(context, "output.wav").toString()
     val credentialsStream: InputStream = context.resources.openRawResource(R.raw.a2t)
     val credentials = GoogleCredentials.fromStream(credentialsStream)
 
     GlobalScope.launch(Dispatchers.IO) {
         try {
             onProgress(null, "准备视频中...")
-            val videoPath = getVideoFile(context, videoUri).toString()
+            val videoPath = getVideoFile(context, videoUri)?.toString() ?: throw IllegalArgumentException("无效的视频源")
 
             onProgress(null, "提取音频中...")
-            val command = "-i $videoPath -vn -acodec pcm_s16le -ar 16000 -ac 1 $outputFilePath"
-            FFmpegKit.execute(command)
+            val command = "-i $videoPath -y -vn -acodec pcm_s16le -ar 16000 -ac 1 $localAudioPath"
+            executeFFmpegCommand(command)
+
+            onProgress(null, "上传音频中...")
+            val remoteAudioUrl = uploadAudioFile(localAudioPath, credentials)
 
             onProgress(null, "识别字幕中...")
-            val transcriptFile = recognizeSpeech(outputFilePath, credentials)
+            // val transcriptFile = recognizeSpeech(remoteAudioPath, credentials)
+            val transcriptFile = longRunningRecognize(context, remoteAudioUrl, credentials)
 
             onProgress(null, "翻译字幕中...")
             val subtitlePath = translateSubtitleFile(context, transcriptFile).toString()
@@ -227,6 +239,61 @@ fun recognizeSpeech(audioFile: String, credentials: GoogleCredentials): File {
     }
     writer.close()
     return srtFile
+}
+
+fun longRunningRecognize(context: Context, url: String, credentials: GoogleCredentials): File {
+    val settings = SpeechSettings.newBuilder()
+        .setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build()
+    val speechClient = SpeechClient.create(settings)
+
+    val filename = url.substringAfterLast('/')
+    val srtFile = getAppSpecificFile(context, "$filename.subtitles.srt")
+
+    val audio = RecognitionAudio.newBuilder()
+        .setUri(url)
+        .build()
+
+    val config = RecognitionConfig.newBuilder()
+        .setEncoding(RecognitionConfig.AudioEncoding.LINEAR16)
+        .setSampleRateHertz(16000)
+        .setLanguageCode("zh-CN") // 主要语言：日文
+//                    .setLanguageCode("ja-JP") // 主要语言：日文
+//                    .addAllAlternativeLanguageCodes(listOf("en-US", "zh-CN")) // 备用语言：英文和中文
+        .setEnableWordTimeOffsets(true)
+        .build()
+
+    val request = LongRunningRecognizeRequest.newBuilder()
+        .setConfig(config)
+        .setAudio(audio)
+        .build()
+
+    val response = speechClient.longRunningRecognizeAsync(request).get()
+    generateSrtFile(response.resultsList, srtFile)
+
+    speechClient.close()
+    return srtFile
+}
+
+fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File) {
+    val srtContent = StringBuilder()
+    var index = 1
+
+    for (result in results) {
+        for (alternative in result.alternativesList) {
+            for (wordInfo in alternative.wordsList) {
+                val startTime = wordInfo.startTime
+                val endTime = wordInfo.endTime
+                val transcript = wordInfo.word
+
+                srtContent.append("$index\n")
+                srtContent.append("${formatTime(startTime)} --> ${formatTime(endTime)}\n")
+                srtContent.append("$transcript\n\n")
+                index++
+            }
+        }
+    }
+
+    outputFile.writeText(srtContent.toString())
 }
 
 fun formatTime(duration: com.google.protobuf.Duration): String {
@@ -341,4 +408,37 @@ fun getVideoFile(context: Context, uri: Uri): File? {
     } else {
         null
     }
+}
+
+fun executeFFmpegCommand(command: String) {
+    val result = runCatching {
+        FFmpegKit.execute(command)
+    }.getOrElse { exception ->
+        throw RuntimeException("FFmpeg命令执行失败: ${exception.message}", exception)
+    }
+
+    // 检查执行结果
+    if (!ReturnCode.isSuccess(result.returnCode)) {
+        throw RuntimeException("FFmpeg命令执行失败，返回码: ${result.returnCode}")
+    }
+}
+
+fun uploadAudioFile(filePath: String, credentials: GoogleCredentials): String {
+    // 加载服务账号的JSON密钥文件
+    val storage = StorageOptions.newBuilder().setCredentials(credentials).build().service
+    // 获取文件路径和名称
+    val file = File(filePath)
+    val fileName = file.name
+
+    // 创建BlobId和BlobInfo
+    val blobId = BlobId.of(your_bucket_name, fileName)
+    val blobInfo = BlobInfo.newBuilder(blobId).build()
+
+    // 上传文件
+    storage.create(blobInfo, Files.readAllBytes(file.toPath()))
+
+    // 获取文件的URI
+    val fileUri = "https://storage.googleapis.com/$your_bucket_name/$fileName"
+    Log.d("Upload", "File uploaded to: $fileUri")
+    return fileUri
 }

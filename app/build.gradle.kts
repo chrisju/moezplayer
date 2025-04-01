@@ -99,4 +99,7 @@ dependencies {
     implementation("io.grpc:grpc-protobuf:1.64.0")
     implementation("io.grpc:grpc-stub:1.64.0")
     implementation("io.grpc:grpc-api:1.64.0")
+
+    implementation("com.google.cloud:google-cloud-storage:2.1.0")
+
 }
