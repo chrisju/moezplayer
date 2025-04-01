@@ -47,6 +47,7 @@ import com.google.cloud.speech.v1.SpeechSettings
 import com.google.cloud.speech.v1.WordInfo
 import com.google.cloud.storage.BlobId
 import com.google.cloud.storage.BlobInfo
+import com.google.cloud.storage.Storage
 import com.google.cloud.storage.StorageOptions
 import com.google.protobuf.ByteString
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -65,6 +66,7 @@ import java.io.InputStream
 import java.io.OutputStreamWriter
 import java.net.MalformedURLException
 import java.net.URL
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 
@@ -224,6 +226,8 @@ fun longRunningRecognize(context: Context, url: String, credentials: GoogleCrede
         .setLanguageCode("ja-JP") // 主要语言：日文
         .addAllAlternativeLanguageCodes(listOf("en-US", "zh-CN")) // 备用语言：英文和中文
         .setEnableWordTimeOffsets(true)
+        .setEnableAutomaticPunctuation(true)
+        .setUseEnhanced(true)
         .build()
 
     val request = LongRunningRecognizeRequest.newBuilder()
@@ -475,6 +479,20 @@ fun executeFFmpegCommand(command: String) {
     }
 }
 
+fun uploadLargeFile(storage: Storage, blobInfo: BlobInfo, filePath: String) {
+    val file = File(filePath)
+    val inputStream: InputStream = FileInputStream(file)
+    val buffer = ByteArray(1024 * 1024) // 1 MB buffer size
+    var bytesRead: Int
+
+    val writeChannel = storage.writer(blobInfo)
+    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+        writeChannel.write(ByteBuffer.wrap(buffer, 0, bytesRead))
+    }
+    writeChannel.close()
+    inputStream.close()
+}
+
 fun uploadAudioFile(filePath: String, credentials: GoogleCredentials): String {
     // 加载服务账号的JSON密钥文件
     val storage = StorageOptions.newBuilder().setCredentials(credentials).build().service
@@ -487,7 +505,9 @@ fun uploadAudioFile(filePath: String, credentials: GoogleCredentials): String {
     val blobInfo = BlobInfo.newBuilder(blobId).build()
 
     // 上传文件
-    storage.create(blobInfo, Files.readAllBytes(file.toPath()))
+//    storage.create(blobInfo, Files.readAllBytes(file.toPath()))
+    uploadLargeFile(storage, blobInfo, filePath)
+
 
     // 获取文件的URI
     val fileUri = "gs://$your_bucket_name/$fileName"
