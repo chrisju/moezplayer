@@ -3,9 +3,11 @@ package win.moez.zplayer
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.util.TypedValue
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -30,8 +32,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
@@ -40,7 +45,6 @@ import com.google.auth.oauth2.GoogleCredentials
 import com.google.cloud.speech.v1.LongRunningRecognizeRequest
 import com.google.cloud.speech.v1.RecognitionAudio
 import com.google.cloud.speech.v1.RecognitionConfig
-import com.google.cloud.speech.v1.RecognizeRequest
 import com.google.cloud.speech.v1.SpeechClient
 import com.google.cloud.speech.v1.SpeechRecognitionResult
 import com.google.cloud.speech.v1.SpeechSettings
@@ -49,7 +53,6 @@ import com.google.cloud.storage.BlobId
 import com.google.cloud.storage.BlobInfo
 import com.google.cloud.storage.Storage
 import com.google.cloud.storage.StorageOptions
-import com.google.protobuf.ByteString
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -63,12 +66,13 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.FileWriter
 import java.io.InputStream
-import java.io.OutputStreamWriter
 import java.net.MalformedURLException
 import java.net.URL
 import java.nio.ByteBuffer
-import java.nio.charset.StandardCharsets
-import java.nio.file.Files
+import java.util.concurrent.TimeUnit
+
+// TODO 整体翻译
+// TODO 切割长字幕
 
 const val your_bucket_name = "moezplayer"
 
@@ -110,6 +114,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResultLauncher<String>) {
     val context = mainActivity.baseContext
@@ -156,6 +161,20 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                 factory = { ctx ->
                     PlayerView(ctx).apply {
                         this.player = player
+
+                        // 设置字幕样式
+                        this.subtitleView?.let {
+                            val captionStyle = CaptionStyleCompat(
+                                Color.WHITE,  // 字体颜色（白色）
+                                Color.TRANSPARENT, // 背景颜色（透明）
+                                Color.TRANSPARENT, // 窗口背景（透明）
+                                CaptionStyleCompat.EDGE_TYPE_OUTLINE, // 描边类型（黑色描边）
+                                Color.BLACK, // 描边颜色
+                                null // 自定义字体
+                            )
+                            it.setStyle(captionStyle)
+                            it.setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, 12f) // 调整字幕大小
+                        }
                     }
                 }
             )
@@ -197,8 +216,7 @@ fun extractAndProcessAudio(
 
             onProgress(null, "翻译字幕中...")
             val subtitlePath = translateSubtitleFile(context, transcriptFile).toString()
-            val s = File(subtitlePath).readText()
-            Log.d("translateSubtitleFile", s)
+
             onProgress(subtitlePath, "字幕已生成！")
         } catch (e: Exception) {
             Log.e("SubtitleError", "字幕处理失败", e)
@@ -226,8 +244,8 @@ fun longRunningRecognize(context: Context, url: String, credentials: GoogleCrede
         .setLanguageCode("ja-JP") // 主要语言：日文
         .addAllAlternativeLanguageCodes(listOf("en-US", "zh-CN")) // 备用语言：英文和中文
         .setEnableWordTimeOffsets(true)
-        .setEnableAutomaticPunctuation(true)
-        .setUseEnhanced(true)
+//        .setEnableAutomaticPunctuation(true)
+//        .setUseEnhanced(true)
         .build()
 
     val request = LongRunningRecognizeRequest.newBuilder()
@@ -235,7 +253,9 @@ fun longRunningRecognize(context: Context, url: String, credentials: GoogleCrede
         .setAudio(audio)
         .build()
 
-    val response = speechClient.longRunningRecognizeAsync(request).get()
+    Log.d("longRunningRecognize", "speechClient.longRunningRecognizeAsync(request).get()")
+    val response = speechClient.longRunningRecognizeAsync(request).get(30, TimeUnit.MINUTES)
+    Log.d("longRunningRecognize", "speechClient.longRunningRecognizeAsync(request).get() ok")
     generateSrtFile(response.resultsList, srtFile)
 
     speechClient.close()
@@ -280,7 +300,7 @@ fun splitWordsList(words: List<WordInfo>): List<List<WordInfo>> {
         currentSegment.add(words[i])
         last?.let {
             val gap = subtractDurationsInMillis(words[i].startTime, words[i - 1].endTime)
-            Log.d("words", "gap of words[${i-1}] - words[$i](${words[i].word}):$gap ms")
+//            Log.d("words", "gap of words[${i-1}] - words[$i](${words[i].word}):$gap ms")
         }
         last = words[i]
     }
@@ -357,7 +377,6 @@ fun translateSubtitleFile(context: Context, srtFile: File): File {
     val translatedFile = getAppSpecificFile(context, "translated.srt")
     val translatedWriter = BufferedWriter(FileWriter(translatedFile))
 
-    // TODO 整体翻译
     srtFile.forEachLine { line ->
         if (line.matches(Regex("\\d+")) || line.contains("-->")) {
             translatedWriter.write(line + "\n")
@@ -380,8 +399,11 @@ fun translateText(text: String): String {
 }
 
 fun loadSubtitle(player: ExoPlayer, subtitlePath: String) {
+    var txt = File(subtitlePath).readText()
+    Log.d("loadSubtitle", "sub: $txt")
     val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(subtitlePath.toUri())
         .setMimeType("application/x-subrip")
+        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT) // 设为默认启用
         .build()
     player.setMediaItem(
         player.currentMediaItem!!.buildUpon().setSubtitleConfigurations(listOf(subtitleConfig))
@@ -507,7 +529,6 @@ fun uploadAudioFile(filePath: String, credentials: GoogleCredentials): String {
     // 上传文件
 //    storage.create(blobInfo, Files.readAllBytes(file.toPath()))
     uploadLargeFile(storage, blobInfo, filePath)
-
 
     // 获取文件的URI
     val fileUri = "gs://$your_bucket_name/$fileName"
