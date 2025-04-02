@@ -89,7 +89,8 @@ import java.nio.ByteBuffer
 const val your_bucket_name = "moezplayer"
 const val split_len = 30
 const val split_len_minlast = 8
-const val font_size = 8f
+const val font_size = 11f
+const val bottom_value = 0.005f     // 默认值是 0.08f，数值越大字幕越低。
 const val chunk_tims_ms = 50 * 1000L
 const val STATIC_INDEX = 0
 
@@ -206,6 +207,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
 
                         // 设置字幕样式
                         this.subtitleView?.let {
+                            it.setBottomPaddingFraction(bottom_value) // 调低字幕
                             val captionStyle = CaptionStyleCompat(
                                 Color.WHITE,  // 字体颜色（白色）
                                 Color.TRANSPARENT, // 背景颜色（透明）
