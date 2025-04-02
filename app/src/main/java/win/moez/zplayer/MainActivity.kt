@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -76,11 +77,13 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
+import java.io.FileReader
 import java.io.FileWriter
 import java.io.IOException
 import java.io.InputStream
@@ -88,9 +91,12 @@ import java.io.RandomAccessFile
 import java.net.MalformedURLException
 import java.net.URL
 import java.nio.ByteBuffer
+import java.security.MessageDigest
 import kotlin.math.roundToInt
 
 // TODO 整体翻译
+// TODO 自然分句
+// TODO 缓存识别结果
 
 const val your_bucket_name = "moezplayer"
 const val split_len = 30
@@ -146,9 +152,9 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
     var subtitleProgress by remember { mutableStateOf("未开始") }
     var subtitlePath by remember { mutableStateOf<String?>(null) }
     var isFullScreen by remember { mutableStateOf(false) }
-    var scale by remember { mutableStateOf(1f) }
-    var offsetX by remember { mutableStateOf(0f) }
-    var offsetY by remember { mutableStateOf(0f) }
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
     var isDragging by remember { mutableStateOf(false) }
 
     // 设置全屏模式
@@ -256,7 +262,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
 }
 
 fun getAppSpecificFile(context: Context, fileName: String): File {
-    val appSpecificDir = context.getExternalFilesDir(null)
+    val appSpecificDir = context.externalCacheDir
     return File(appSpecificDir, fileName)
 }
 
@@ -272,12 +278,19 @@ fun extractAndProcessAudio(
     val credentialsStream: InputStream = context.resources.openRawResource(R.raw.a2t)
     val credentials = GoogleCredentials.fromStream(credentialsStream)
     var transcriptFile :File
+    var subtitlePath = ""
 
     GlobalScope.launch(Dispatchers.IO) {
         try {
             onProgress(null, "准备视频中...")
             val videoPath = getVideoFile(context, videoUri)?.toString()
                 ?: throw IllegalArgumentException("无效的视频源")
+            // 检查视频的字幕 hash.srt
+            val savedSrt = hashFile(context, generateFileHash(File(videoPath)))
+            if(savedSrt.exists()){
+                onProgress(savedSrt.toString(), "加载即存字幕！")
+                return@launch
+            }
 
             onProgress(null, "提取音频中...")
             val command = "-i $videoPath -y -vn -acodec pcm_s16le -ar 16000 -ac 1 $localAudioPath"
@@ -300,6 +313,14 @@ fun extractAndProcessAudio(
             val staticValues = mutableListOf(10)
             staticValues[STATIC_INDEX] = 0
             for ((i, audioPath) in audioPaths.withIndex()) {
+                // 检查音频的字幕
+                val savedAudioSrt = hashFile(context, generateFileHash(File(audioPath)))
+                if(savedAudioSrt.exists()){
+                    // 更新 staticValues
+                    staticValues[STATIC_INDEX] = getSrtIndex(savedAudioSrt)
+                    continue
+                }
+
                 onProgress(null, "上传音频中...")
                 val remoteAudioPath = uploadAudioFile(audioPath, credentials)
 
@@ -316,10 +337,16 @@ fun extractAndProcessAudio(
                 }
 
                 onProgress(null, "翻译字幕中...")
-                val subtitlePath = translateSubtitleFile(context, transcriptFile).toString()
+                subtitlePath = translateSubtitleFile(context, transcriptFile).toString()
                 onProgress(subtitlePath, "字幕已生成！")
+
+                // 存储音频的字幕
+                saveFile(context, File(subtitlePath), generateFileHash(File(audioPath)))
             }
             speechClient.close()
+
+            // 存储视频的字幕 hash.srt
+            saveFile(context, File(subtitlePath), generateFileHash(File(videoPath)))
         } catch (e: Exception) {
             Log.e("SubtitleError", "字幕处理失败", e)
             onProgress(null, "字幕生成失败:$e")
@@ -875,4 +902,54 @@ fun copyStream(inputStream: InputStream, outputStream: FileOutputStream) {
     while (inputStream.read(buffer).also { bytesRead = it } != -1) {
         outputStream.write(buffer, 0, bytesRead)
     }
+}
+
+fun generateFileHash(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buffer = ByteArray(1024 * 1024) // 1MB 缓冲区
+    FileInputStream(file).use { fis ->
+        var bytesRead: Int
+        while (fis.read(buffer).also { bytesRead = it } != -1) {
+            digest.update(buffer, 0, bytesRead)
+        }
+    }
+    val hashBytes = digest.digest()
+    return hashBytes.joinToString("") { "%02x".format(it) }
+}
+
+
+fun hashFile(context: Context, hash: String): File {
+    val externalDir = context.getExternalFilesDir(null)
+    return File(externalDir, "$hash.srt")
+}
+fun saveFile(context: Context, sourceFile: File, hash: String) {
+    val externalDir = context.getExternalFilesDir(null)
+    try {
+        val destFile = File(externalDir, "$hash.srt")
+        sourceFile.inputStream().use { input ->
+            destFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        Log.d("zplayer", "File copied successfully to: ${destFile.absolutePath}")
+    } catch (e: IOException) {
+        e.printStackTrace()
+        Log.d("zplayer", "Failed to copy file: ${e.message}")
+    }
+}
+
+fun getSrtIndex(file: File): Int {
+    var lastNumericLine = "0"
+
+    if (file.exists()) {
+        BufferedReader(FileReader(file)).use { reader ->
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                if (line!!.matches(Regex("\\d+"))) {
+                    lastNumericLine = line.toString()
+                }
+            }
+        }
+    }
+    return lastNumericLine.toInt()
 }
