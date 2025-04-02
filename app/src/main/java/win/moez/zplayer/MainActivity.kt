@@ -42,8 +42,14 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.google.api.gax.core.FixedCredentialsProvider
 import com.google.auth.oauth2.GoogleCredentials
-import com.google.cloud.speech.v1.*
-import com.google.protobuf.ByteString
+import com.google.cloud.speech.v1.LongRunningRecognizeRequest
+import com.google.cloud.speech.v1.RecognitionAudio
+import com.google.cloud.speech.v1.RecognitionConfig
+import com.google.cloud.speech.v1.SpeechClient
+import com.google.cloud.speech.v1.SpeechContext
+import com.google.cloud.speech.v1.SpeechRecognitionResult
+import com.google.cloud.speech.v1.SpeechSettings
+import com.google.cloud.speech.v1.WordInfo
 import com.google.cloud.storage.BlobId
 import com.google.cloud.storage.BlobInfo
 import com.google.cloud.storage.Storage
@@ -53,26 +59,31 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
-import okhttp3.*
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.FileWriter
 import java.io.IOException
 import java.io.InputStream
+import java.io.RandomAccessFile
 import java.net.MalformedURLException
 import java.net.URL
 import java.nio.ByteBuffer
-import java.io.*
 
-// TODO 整体翻译
-// TODO 切割长字幕
 
 const val your_bucket_name = "moezplayer"
+const val split_len = 15
 
 class MainActivity : ComponentActivity() {
 
@@ -320,7 +331,7 @@ fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File, of
             for (segment in segments) {
                 val startTime = Durations.add(Durations.fromMillis(offset.toLong()), segment.first().startTime)
                 val endTime = Durations.add(Durations.fromMillis(offset.toLong()), segment.last().endTime)
-                val transcript = segment.joinToString("") { it.word }
+                val transcript = segment.joinToString("") { if (it.word.contains("|")) it.word.split("|")[0] else it.word }
 
                 srtContent.append("$index\n")
                 srtContent.append("${formatTime(startTime)} --> ${formatTime(endTime)}\n")
@@ -338,12 +349,34 @@ fun splitWordsList(words: List<WordInfo>): List<List<WordInfo>> {
     val segments = mutableListOf<List<WordInfo>>()
     var currentSegment = mutableListOf<WordInfo>()
 
+    var len = 0
+    for ((i, word) in words.withIndex()) {
+        currentSegment.add(words[i])
+        len += if (word.word.contains("|")) word.word.indexOf("|") else word.word.length
+        if(len > split_len){
+            segments.add(currentSegment.toList())
+            currentSegment.clear()
+            len = 0
+        }
+    }
+
+    if (currentSegment.isNotEmpty()) {
+        segments.add(currentSegment)
+    }
+
+    return segments
+}
+
+fun splitWordsList2(words: List<WordInfo>): List<List<WordInfo>> {
+    val segments = mutableListOf<List<WordInfo>>()
+    var currentSegment = mutableListOf<WordInfo>()
+
     var last : WordInfo? = null
     for (i in words.indices) {
         currentSegment.add(words[i])
         last?.let {
             val gap = subtractDurationsInMillis(words[i].startTime, words[i - 1].endTime)
-//            Log.d("words", "gap of words[${i-1}] - words[$i](${words[i].word}):$gap ms")
+            Log.d("words", "gap of words[${i-1}] - words[$i](${words[i].word}):$gap ms")
         }
         last = words[i]
     }
