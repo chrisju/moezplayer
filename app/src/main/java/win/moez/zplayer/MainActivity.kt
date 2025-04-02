@@ -279,7 +279,7 @@ fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File) {
             for (segment in segments) {
                 val startTime = segment.first().startTime
                 val endTime = segment.last().endTime
-                val transcript = segment.joinToString(" ") { it.word }
+                val transcript = segment.joinToString("") { it.word }
 
                 srtContent.append("$index\n")
                 srtContent.append("${formatTime(startTime)} --> ${formatTime(endTime)}\n")
@@ -321,6 +321,10 @@ fun splitWordsList(words: List<WordInfo>): List<List<WordInfo>> {
 }
 
 fun splitLargeSegment(segment: List<WordInfo>): List<List<WordInfo>> {
+    val transcript = segment.joinToString("") { it.word }
+    splitTextIntoSentences(transcript){
+// TODO
+    }
     val segments = mutableListOf<List<WordInfo>>()
     splitSegmentRecursively(segment, segments)
     return segments
