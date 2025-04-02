@@ -481,15 +481,23 @@ fun translateText(text: String): String {
 fun loadSubtitle(player: ExoPlayer, subtitlePath: String) {
     var txt = File(subtitlePath).readText()
     Log.d("loadSubtitle", "sub: $txt")
+
     val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(subtitlePath.toUri())
         .setMimeType("application/x-subrip")
         .setSelectionFlags(C.SELECTION_FLAG_DEFAULT) // 设为默认启用
         .build()
+
+    val currentPosition = player.currentPosition
+
+    val playWhenReady = player.playWhenReady
     player.setMediaItem(
         player.currentMediaItem!!.buildUpon().setSubtitleConfigurations(listOf(subtitleConfig))
             .build()
     )
     player.prepare()
+
+    player.seekTo(currentPosition)
+    player.playWhenReady = playWhenReady
 }
 
 fun copyUriToFile(context: Context, uri: Uri, outputFile: File): File? {
