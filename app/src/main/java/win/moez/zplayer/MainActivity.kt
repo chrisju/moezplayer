@@ -82,10 +82,13 @@ import java.net.URL
 import java.nio.ByteBuffer
 
 // TODO 整体翻译
+// TODO 全屏
+// TODO 横屏
 
 const val your_bucket_name = "moezplayer"
-const val split_len = 15
+const val split_len = 30
 const val split_len_minlast = 8
+const val font_size = 8f
 const val chunk_tims_ms = 50 * 1000L
 const val STATIC_INDEX = 0
 
@@ -186,7 +189,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                                 null // 自定义字体
                             )
                             it.setStyle(captionStyle)
-                            it.setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, 12f) // 调整字幕大小
+                            it.setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, font_size) // 调整字幕大小
                         }
                     }
                 }
