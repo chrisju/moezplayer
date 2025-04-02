@@ -64,7 +64,7 @@ import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
@@ -81,10 +81,12 @@ import java.net.MalformedURLException
 import java.net.URL
 import java.nio.ByteBuffer
 
+// TODO 整体翻译
 
 const val your_bucket_name = "moezplayer"
 const val split_len = 15
-const val chunk_tims_ms = 1 * 60 * 1000L
+const val split_len_minlast = 8
+const val chunk_tims_ms = 50 * 1000L
 const val STATIC_INDEX = 0
 
 class MainActivity : ComponentActivity() {
@@ -159,7 +161,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                 player.play()
                 extractAndProcessAudio(context, uri) { path, progress ->
                     Log.d("progress", "extractAndProcessAudio:$progress")
-                    subtitleProgress += progress
+                    subtitleProgress = progress
                     subtitlePath = path
                     path?.let { mainActivity.runOnUiThread { loadSubtitle(player, it) } }
                 }
@@ -206,7 +208,6 @@ fun extractAndProcessAudio(
 ) {
     val localAudioPath = getAppSpecificFile(context, "output.wav").toString()
     val audioPaths = mutableListOf<String>()
-    val remoteAudioPaths = mutableListOf<String>()
     val srts = mutableListOf<File>()
     val credentialsStream: InputStream = context.resources.openRawResource(R.raw.a2t)
     val credentials = GoogleCredentials.fromStream(credentialsStream)
@@ -236,14 +237,14 @@ fun extractAndProcessAudio(
             val settings = SpeechSettings.newBuilder()
                 .setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build()
             val speechClient = SpeechClient.create(settings)
-            val static_values = mutableListOf(10)
-            static_values[STATIC_INDEX] = 0
+            val staticValues = mutableListOf(10)
+            staticValues[STATIC_INDEX] = 0
             for ((i, audioPath) in audioPaths.withIndex()) {
                 onProgress(null, "上传音频中...")
                 val remoteAudioPath = uploadAudioFile(audioPath, credentials)
 
                 onProgress(null, "识别字幕中...")
-                val srt = longRunningRecognize(context, remoteAudioPath, speechClient, i * chunk_tims_ms, static_values)
+                val srt = longRunningRecognize(context, remoteAudioPath, speechClient, i * chunk_tims_ms, staticValues)
                 srts.add(srt)
 
                 if(srts.size == 1){
@@ -271,7 +272,7 @@ fun longRunningRecognize(
     url: String,
     speechClient: SpeechClient,
     offset: Long,
-    static_values: MutableList<Int>
+    staticValues: MutableList<Int>
 ): File {
     val filename = url.substringAfterLast('/')
     val srtFile = getAppSpecificFile(context, "$filename.subtitles.srt")
@@ -309,18 +310,23 @@ fun longRunningRecognize(
         .setEnableAutomaticPunctuation(true)
         .setAudioChannelCount(1)
         .addSpeechContexts(speechContext)
-//        .setUseEnhanced(true)
+        .setUseEnhanced(true)
         .build()
 
     val request = LongRunningRecognizeRequest.newBuilder()
         .setConfig(config)
         .setAudio(audio)
         .build()
-
-    Log.d("longRunningRecognize", "speechClient.longRunningRecognizeAsync(request).get()")
     val response = speechClient.longRunningRecognizeAsync(request).get()
-    Log.d("longRunningRecognize", "speechClient.longRunningRecognizeAsync(request).get() ok")
-    generateSrtFile(response.resultsList, srtFile, offset, static_values)
+
+//    val request = RecognizeRequest.newBuilder()
+//        .setConfig(config)
+//        .setAudio(audio)
+//        .build()
+//    val response = speechClient.recognize(request)
+
+    generateSrtFile(response.resultsList, srtFile, offset, staticValues)
+
 
     return srtFile
 }
@@ -329,10 +335,10 @@ fun generateSrtFile(
     results: List<SpeechRecognitionResult>,
     outputFile: File,
     offset: Long,
-    static_values: MutableList<Int>
+    staticValues: MutableList<Int>
 ) {
     val srtContent = StringBuilder()
-    var index = static_values[STATIC_INDEX] + 1
+    var index = staticValues[STATIC_INDEX] + 1
 
     Log.d("generateSrtFile", "sub1 1: ${results.size}")
     for (result in results) {
@@ -354,29 +360,34 @@ fun generateSrtFile(
             }
         }
     }
-    static_values[STATIC_INDEX] = index - 1
+    staticValues[STATIC_INDEX] = index - 1
 
     Log.d("generateSrtFile", "sub1: $srtContent")
     outputFile.writeText(srtContent.toString())
 }
 
 fun splitWordsList(words: List<WordInfo>): List<List<WordInfo>> {
-    val segments = mutableListOf<List<WordInfo>>()
+    val segments = mutableListOf<MutableList<WordInfo>>()
     var currentSegment = mutableListOf<WordInfo>()
-
     var len = 0
-    for ((i, word) in words.withIndex()) {
-        currentSegment.add(words[i])
+
+    for (word in words) {
+        currentSegment.add(word)
         len += if (word.word.contains("|")) word.word.indexOf("|") else word.word.length
-        if(len > split_len){
-            segments.add(currentSegment.toList())
+        if (len > split_len) {
+            segments.add(currentSegment.toMutableList())
             currentSegment.clear()
             len = 0
         }
     }
 
     if (currentSegment.isNotEmpty()) {
-        segments.add(currentSegment)
+        val alen = currentSegment.sumOf { if (it.word.contains("|")) it.word.indexOf("|") else it.word.length }
+        if (segments.isNotEmpty() && alen < split_len_minlast) {
+            segments.last().addAll(currentSegment)
+        } else {
+            segments.add(currentSegment)
+        }
     }
 
     return segments
@@ -473,12 +484,12 @@ fun translateSubtitleFile(context: Context, srtFile: File): File {
     val translatedWriter = BufferedWriter(FileWriter(translatedFile))
 
     srtFile.forEachLine { line ->
-//        if (line.matches(Regex("\\d+")) || line.contains("-->")) {
+        if (line.matches(Regex("\\d+")) || line.contains("-->")) {
             translatedWriter.write(line + "\n")
-//        } else {
-//            translatedWriter.write(line + "\n")
-//            translatedWriter.write(translateText(line) + "\n\n")
-//        }
+        } else {
+            translatedWriter.write(line + "\n")
+            translatedWriter.write(translateText(line) + "\n\n")
+        }
     }
     translatedWriter.close()
     return translatedFile
@@ -529,7 +540,7 @@ fun copyUriToFile(context: Context, uri: Uri, outputFile: File): File? {
     }
 }
 
-fun downloadVideo(context: Context, uri: Uri, outputFile: File): File? {
+fun downloadVideo(uri: Uri, outputFile: File): File? {
     return try {
         val request = Request.Builder().url(uri.toString()).build()
         val response = OkHttpClient().newCall(request).execute()
@@ -555,7 +566,7 @@ fun isUrl(uri: String): Boolean {
     }
 }
 
-fun getFileName(context: Context, uri: Uri): String? {
+fun getFileName(uri: Uri): String? {
     var fileName: String? = null
     when (uri.scheme) {
         "content" -> {
@@ -563,7 +574,7 @@ fun getFileName(context: Context, uri: Uri): String? {
         }
 
         "file" -> {
-            fileName = File(uri.path).name
+            fileName = File(uri.path!!).name
         }
 
         "http", "https" -> {
@@ -579,11 +590,11 @@ fun getFileName(context: Context, uri: Uri): String? {
 }
 
 fun getVideoFile(context: Context, uri: Uri): File? {
-    val fileName = getFileName(context, uri) ?: "default_filename.mp4"
+    val fileName = getFileName(uri) ?: "default_filename.mp4"
     return if (uri.toString().startsWith("content://")) {
         copyUriToFile(context, uri, getAppSpecificFile(context, fileName))
     } else if (isUrl(uri.toString())) {
-        downloadVideo(context, uri, getAppSpecificFile(context, fileName))
+        downloadVideo(uri, getAppSpecificFile(context, fileName))
     } else if (File(uri.toString()).exists()) {
         File(uri.toString())
     } else {
@@ -639,7 +650,7 @@ fun uploadAudioFile(filePath: String, credentials: GoogleCredentials): String {
     return fileUri
 }
 
-private val apiKey = "YOUR_GOOGLE_CLOUD_API_KEY" // 使用你的 API 密钥
+private const val apiKey = "YOUR_GOOGLE_CLOUD_API_KEY" // 使用你的 API 密钥
 private val client = OkHttpClient()
 
 fun splitTextIntoSentences(text: String, callback: (List<String>) -> Unit) {
@@ -652,9 +663,7 @@ fun splitTextIntoSentences(text: String, callback: (List<String>) -> Unit) {
     json.put("encodingType", "UTF8")
 
     // 创建请求体
-    val requestBody = RequestBody.create(
-        "application/json".toMediaTypeOrNull(), json.toString()
-    )
+    val requestBody = json.toString().toRequestBody("application/json".toMediaTypeOrNull())
 
     // 创建 HTTP 请求
     val request = Request.Builder()
