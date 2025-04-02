@@ -1,3 +1,6 @@
+import com.android.build.api.dsl.ApkSigningConfig
+import org.gradle.kotlin.dsl.release
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
