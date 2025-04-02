@@ -84,6 +84,8 @@ import java.nio.ByteBuffer
 
 const val your_bucket_name = "moezplayer"
 const val split_len = 15
+const val chunk_tims_ms = 1 * 60 * 1000L
+const val STATIC_INDEX = 0
 
 class MainActivity : ComponentActivity() {
 
@@ -208,7 +210,6 @@ fun extractAndProcessAudio(
     val srts = mutableListOf<File>()
     val credentialsStream: InputStream = context.resources.openRawResource(R.raw.a2t)
     val credentials = GoogleCredentials.fromStream(credentialsStream)
-    val chunk = 1 * 60 * 1000
     var transcriptFile :File
 
     GlobalScope.launch(Dispatchers.IO) {
@@ -223,7 +224,7 @@ fun extractAndProcessAudio(
 
             if (File(localAudioPath).length() > 8 * 1024 * 1024) {
                 onProgress(null, "分割音频中...")
-                var list = splitWavByMilliseconds(localAudioPath, chunk)
+                var list = splitWavByMilliseconds(localAudioPath, chunk_tims_ms)
                 for (f in list) {
                     audioPaths.add(f)
                 }
@@ -235,12 +236,14 @@ fun extractAndProcessAudio(
             val settings = SpeechSettings.newBuilder()
                 .setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build()
             val speechClient = SpeechClient.create(settings)
+            val static_values = mutableListOf(10)
+            static_values[STATIC_INDEX] = 0
             for ((i, audioPath) in audioPaths.withIndex()) {
                 onProgress(null, "上传音频中...")
                 val remoteAudioPath = uploadAudioFile(audioPath, credentials)
 
                 onProgress(null, "识别字幕中...")
-                val srt = longRunningRecognize(context, remoteAudioPath, speechClient, chunk * i)
+                val srt = longRunningRecognize(context, remoteAudioPath, speechClient, i * chunk_tims_ms, static_values)
                 srts.add(srt)
 
                 if(srts.size == 1){
@@ -263,7 +266,13 @@ fun extractAndProcessAudio(
     }
 }
 
-fun longRunningRecognize(context: Context, url: String, speechClient: SpeechClient, offset: Int): File {
+fun longRunningRecognize(
+    context: Context,
+    url: String,
+    speechClient: SpeechClient,
+    offset: Long,
+    static_values: MutableList<Int>
+): File {
     val filename = url.substringAfterLast('/')
     val srtFile = getAppSpecificFile(context, "$filename.subtitles.srt")
 
@@ -311,14 +320,19 @@ fun longRunningRecognize(context: Context, url: String, speechClient: SpeechClie
     Log.d("longRunningRecognize", "speechClient.longRunningRecognizeAsync(request).get()")
     val response = speechClient.longRunningRecognizeAsync(request).get()
     Log.d("longRunningRecognize", "speechClient.longRunningRecognizeAsync(request).get() ok")
-    generateSrtFile(response.resultsList, srtFile, offset)
+    generateSrtFile(response.resultsList, srtFile, offset, static_values)
 
     return srtFile
 }
 
-fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File, offset: Int) {
+fun generateSrtFile(
+    results: List<SpeechRecognitionResult>,
+    outputFile: File,
+    offset: Long,
+    static_values: MutableList<Int>
+) {
     val srtContent = StringBuilder()
-    var index = 1
+    var index = static_values[STATIC_INDEX] + 1
 
     Log.d("generateSrtFile", "sub1 1: ${results.size}")
     for (result in results) {
@@ -329,8 +343,8 @@ fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File, of
             val segments = splitWordsList(words)
 
             for (segment in segments) {
-                val startTime = Durations.add(Durations.fromMillis(offset.toLong()), segment.first().startTime)
-                val endTime = Durations.add(Durations.fromMillis(offset.toLong()), segment.last().endTime)
+                val startTime = Durations.add(Durations.fromMillis(offset), segment.first().startTime)
+                val endTime = Durations.add(Durations.fromMillis(offset), segment.last().endTime)
                 val transcript = segment.joinToString("") { if (it.word.contains("|")) it.word.split("|")[0] else it.word }
 
                 srtContent.append("$index\n")
@@ -340,6 +354,7 @@ fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File, of
             }
         }
     }
+    static_values[STATIC_INDEX] = index - 1
 
     Log.d("generateSrtFile", "sub1: $srtContent")
     outputFile.writeText(srtContent.toString())
@@ -688,7 +703,7 @@ private fun parseSentences(response: String): List<String> {
     return sentencesList
 }
 
-fun splitWavByMilliseconds(inputPath: String, segmentDurationMs: Int): List<String> {
+fun splitWavByMilliseconds(inputPath: String, segmentDurationMs: Long): List<String> {
     val inputFile = File(inputPath)
     if (!inputFile.exists()) throw FileNotFoundException("文件不存在: $inputPath")
 
@@ -709,7 +724,7 @@ fun splitWavByMilliseconds(inputPath: String, segmentDurationMs: Int): List<Stri
     println("采样率: $sampleRate Hz, 通道数: $channels, 位深: $bitsPerSample bit, 每秒字节数: $byteRate")
 
     // 计算每个段的字节大小
-    val chunkSize = ((segmentDurationMs.toLong() * byteRate) / 1000).toInt()
+    val chunkSize = ((segmentDurationMs * byteRate) / 1000).toInt()
     val buffer = ByteArray(4096)
 
     val outputFiles = mutableListOf<String>()
