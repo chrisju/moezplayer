@@ -14,11 +14,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
@@ -29,7 +32,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
@@ -83,6 +88,7 @@ import java.io.RandomAccessFile
 import java.net.MalformedURLException
 import java.net.URL
 import java.nio.ByteBuffer
+import kotlin.math.roundToInt
 
 // TODO 整体翻译
 
@@ -140,6 +146,10 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
     var subtitleProgress by remember { mutableStateOf("未开始") }
     var subtitlePath by remember { mutableStateOf<String?>(null) }
     var isFullScreen by remember { mutableStateOf(false) }
+    var scale by remember { mutableStateOf(1f) }
+    var offsetX by remember { mutableStateOf(0f) }
+    var offsetY by remember { mutableStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
 
     // 设置全屏模式
     fun enterFullScreen() {
@@ -192,7 +202,26 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
             AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(if (isFullScreen) LocalConfiguration.current.screenHeightDp.dp else 200.dp),
+                    .height(if (isFullScreen) LocalConfiguration.current.screenHeightDp.dp else 200.dp)
+                    .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) } // 拖拽偏移
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            if (player.isPlaying) return@detectTransformGestures // 只有暂停时才可操作
+
+                            scale = (scale * zoom).coerceIn(1f, 3f) // 限制缩放范围 1x - 3x
+                            if (isDragging) {
+                                offsetX += pan.x
+                                offsetY += pan.y
+                            }
+                        }
+                    }
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onPress = { isDragging = true }, // 按下开始拖拽
+                            onTap = { isDragging = false }  // 轻触取消拖拽状态
+                        )
+                    }
+                ,
                 factory = { ctx ->
                     PlayerView(ctx).apply {
                         this.player = player
@@ -518,8 +547,8 @@ fun translateSubtitleFile(context: Context, srtFile: File): File {
         if (line.matches(Regex("\\d+")) || line.contains("-->")) {
             translatedWriter.write(line + "\n")
         } else {
-            translatedWriter.write(line + "\n")
-            translatedWriter.write(translateText(line) + "\n\n")
+            translatedWriter.write(translateText(line) + "\n")
+            translatedWriter.write(line + "\n\n")
         }
     }
     translatedWriter.close()
