@@ -42,17 +42,13 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.google.api.gax.core.FixedCredentialsProvider
 import com.google.auth.oauth2.GoogleCredentials
-import com.google.cloud.speech.v1.LongRunningRecognizeRequest
-import com.google.cloud.speech.v1.RecognitionAudio
-import com.google.cloud.speech.v1.RecognitionConfig
-import com.google.cloud.speech.v1.SpeechClient
-import com.google.cloud.speech.v1.SpeechRecognitionResult
-import com.google.cloud.speech.v1.SpeechSettings
-import com.google.cloud.speech.v1.WordInfo
+import com.google.cloud.speech.v1.*
+import com.google.protobuf.ByteString
 import com.google.cloud.storage.BlobId
 import com.google.cloud.storage.BlobInfo
 import com.google.cloud.storage.Storage
 import com.google.cloud.storage.StorageOptions
+import com.google.protobuf.util.Durations
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -71,7 +67,7 @@ import java.io.InputStream
 import java.net.MalformedURLException
 import java.net.URL
 import java.nio.ByteBuffer
-import java.util.concurrent.TimeUnit
+import java.io.*
 
 // TODO 整体翻译
 // TODO 切割长字幕
@@ -196,8 +192,13 @@ fun extractAndProcessAudio(
     onProgress: (String?, String) -> Unit
 ) {
     val localAudioPath = getAppSpecificFile(context, "output.wav").toString()
+    val audioPaths = mutableListOf<String>()
+    val remoteAudioPaths = mutableListOf<String>()
+    val srts = mutableListOf<File>()
     val credentialsStream: InputStream = context.resources.openRawResource(R.raw.a2t)
     val credentials = GoogleCredentials.fromStream(credentialsStream)
+    val chunk = 1 * 60 * 1000
+    var transcriptFile :File
 
     GlobalScope.launch(Dispatchers.IO) {
         try {
@@ -209,17 +210,41 @@ fun extractAndProcessAudio(
             val command = "-i $videoPath -y -vn -acodec pcm_s16le -ar 16000 -ac 1 $localAudioPath"
             executeFFmpegCommand(command)
 
-            onProgress(null, "上传音频中...")
-            val remoteAudioUrl = uploadAudioFile(localAudioPath, credentials)
+            if (File(localAudioPath).length() > 8 * 1024 * 1024) {
+                onProgress(null, "分割音频中...")
+                var list = splitWavByMilliseconds(localAudioPath, chunk)
+                for (f in list) {
+                    audioPaths.add(f)
+                }
+                Log.e("splitWavByMilliseconds", "分割数：${audioPaths.size}")
+            } else {
+                audioPaths.add(localAudioPath)
+            }
 
-            onProgress(null, "识别字幕中...")
-            // val transcriptFile = recognizeSpeech(remoteAudioPath, credentials)
-            val transcriptFile = longRunningRecognize(context, remoteAudioUrl, credentials)
+            val settings = SpeechSettings.newBuilder()
+                .setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build()
+            val speechClient = SpeechClient.create(settings)
+            for ((i, audioPath) in audioPaths.withIndex()) {
+                onProgress(null, "上传音频中...")
+                val remoteAudioPath = uploadAudioFile(audioPath, credentials)
 
-            onProgress(null, "翻译字幕中...")
-            val subtitlePath = translateSubtitleFile(context, transcriptFile).toString()
+                onProgress(null, "识别字幕中...")
+                val srt = longRunningRecognize(context, remoteAudioPath, speechClient, chunk * i)
+                srts.add(srt)
 
-            onProgress(subtitlePath, "字幕已生成！")
+                if(srts.size == 1){
+                    transcriptFile = srts[0]
+                }else{
+                    val filename = localAudioPath.substringAfterLast('/')
+                    transcriptFile = getAppSpecificFile(context, "$filename.subtitles.srt")
+                    concatenateFiles(transcriptFile, srts)
+                }
+
+                onProgress(null, "翻译字幕中...")
+                val subtitlePath = translateSubtitleFile(context, transcriptFile).toString()
+                onProgress(subtitlePath, "字幕已生成！")
+            }
+            speechClient.close()
         } catch (e: Exception) {
             Log.e("SubtitleError", "字幕处理失败", e)
             onProgress(null, "字幕生成失败:$e")
@@ -227,16 +252,31 @@ fun extractAndProcessAudio(
     }
 }
 
-fun longRunningRecognize(context: Context, url: String, credentials: GoogleCredentials): File {
-    val settings = SpeechSettings.newBuilder()
-        .setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build()
-    val speechClient = SpeechClient.create(settings)
-
+fun longRunningRecognize(context: Context, url: String, speechClient: SpeechClient, offset: Int): File {
     val filename = url.substringAfterLast('/')
     val srtFile = getAppSpecificFile(context, "$filename.subtitles.srt")
 
     val audio = RecognitionAudio.newBuilder()
         .setUri(url)
+        .build()
+
+    val speechContext = SpeechContext.newBuilder()
+        .addAllPhrases(listOf(
+            "Agile",
+            "Scrum",
+            "Sprint",
+            "Git",
+            "Docker",
+            "CI/CD",
+            "Unit Testing",
+            "Microservices",
+            "API Gateway",
+            "Bug Fixing",
+            "Pull Request",
+            "Continuous Integration",
+            "Release Notes",
+            "Technical Debt"
+        ))
         .build()
 
     val config = RecognitionConfig.newBuilder()
@@ -246,7 +286,9 @@ fun longRunningRecognize(context: Context, url: String, credentials: GoogleCrede
         .setLanguageCode("ja-JP") // 主要语言：日文
         .addAllAlternativeLanguageCodes(listOf("en-US", "zh-CN")) // 备用语言：英文和中文
         .setEnableWordTimeOffsets(true)
-//        .setEnableAutomaticPunctuation(true)
+        .setEnableAutomaticPunctuation(true)
+        .setAudioChannelCount(1)
+        .addSpeechContexts(speechContext)
 //        .setUseEnhanced(true)
         .build()
 
@@ -256,15 +298,14 @@ fun longRunningRecognize(context: Context, url: String, credentials: GoogleCrede
         .build()
 
     Log.d("longRunningRecognize", "speechClient.longRunningRecognizeAsync(request).get()")
-    val response = speechClient.longRunningRecognizeAsync(request).get(30, TimeUnit.MINUTES)
+    val response = speechClient.longRunningRecognizeAsync(request).get()
     Log.d("longRunningRecognize", "speechClient.longRunningRecognizeAsync(request).get() ok")
-    generateSrtFile(response.resultsList, srtFile)
+    generateSrtFile(response.resultsList, srtFile, offset)
 
-    speechClient.close()
     return srtFile
 }
 
-fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File) {
+fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File, offset: Int) {
     val srtContent = StringBuilder()
     var index = 1
 
@@ -277,8 +318,8 @@ fun generateSrtFile(results: List<SpeechRecognitionResult>, outputFile: File) {
             val segments = splitWordsList(words)
 
             for (segment in segments) {
-                val startTime = segment.first().startTime
-                val endTime = segment.last().endTime
+                val startTime = Durations.add(Durations.fromMillis(offset.toLong()), segment.first().startTime)
+                val endTime = Durations.add(Durations.fromMillis(offset.toLong()), segment.last().endTime)
                 val transcript = segment.joinToString("") { it.word }
 
                 srtContent.append("$index\n")
@@ -384,12 +425,12 @@ fun translateSubtitleFile(context: Context, srtFile: File): File {
     val translatedWriter = BufferedWriter(FileWriter(translatedFile))
 
     srtFile.forEachLine { line ->
-        if (line.matches(Regex("\\d+")) || line.contains("-->")) {
+//        if (line.matches(Regex("\\d+")) || line.contains("-->")) {
             translatedWriter.write(line + "\n")
-        } else {
-            translatedWriter.write(line + "\n")
-            translatedWriter.write(translateText(line) + "\n\n")
-        }
+//        } else {
+//            translatedWriter.write(line + "\n")
+//            translatedWriter.write(translateText(line) + "\n\n")
+//        }
     }
     translatedWriter.close()
     return translatedFile
@@ -604,4 +645,109 @@ private fun parseSentences(response: String): List<String> {
         e.printStackTrace()
     }
     return sentencesList
+}
+
+fun splitWavByMilliseconds(inputPath: String, segmentDurationMs: Int): List<String> {
+    val inputFile = File(inputPath)
+    if (!inputFile.exists()) throw FileNotFoundException("文件不存在: $inputPath")
+
+    // 读取 WAV 头部
+    val inputStream = FileInputStream(inputFile)
+    val header = ByteArray(44)
+    inputStream.read(header)
+
+    // 解析 WAV 头部信息
+    val sampleRate = ((header[27].toInt() and 0xFF) shl 24) or
+            ((header[26].toInt() and 0xFF) shl 16) or
+            ((header[25].toInt() and 0xFF) shl 8) or
+            (header[24].toInt() and 0xFF)
+    val channels = header[22].toInt()
+    val bitsPerSample = header[34].toInt()
+    val byteRate = sampleRate * channels * (bitsPerSample / 8)  // 每秒的字节数
+
+    println("采样率: $sampleRate Hz, 通道数: $channels, 位深: $bitsPerSample bit, 每秒字节数: $byteRate")
+
+    // 计算每个段的字节大小
+    val chunkSize = ((segmentDurationMs.toLong() * byteRate) / 1000).toInt()
+    val buffer = ByteArray(4096)
+
+    val outputFiles = mutableListOf<String>()
+    var chunkIndex = 1
+    var startByte = 44  // 数据起始位置
+    val totalSize = inputFile.length().toInt()
+
+    while (startByte < totalSize) {
+        val outputFile = File("${inputPath}${chunkIndex}.wav")
+        FileOutputStream(outputFile).use { outputStream ->
+            outputStream.write(header) // 写入 WAV 头部
+
+            // 读取数据
+            inputStream.channel.position(startByte.toLong())
+            var bytesRemaining = chunkSize
+            var bytesRead: Int
+            while (bytesRemaining > 0) {
+                val readSize = if (bytesRemaining < buffer.size) bytesRemaining else buffer.size
+                bytesRead = inputStream.read(buffer, 0, readSize)
+                if (bytesRead == -1) break
+                outputStream.write(buffer, 0, bytesRead)
+                bytesRemaining -= bytesRead
+            }
+
+            // 计算实际数据大小
+            val actualDataSize = chunkSize - bytesRemaining
+            if (actualDataSize <= 0) return@splitWavByMilliseconds emptyList()
+
+            // 更新 WAV 头部
+            updateWavHeader(outputFile, actualDataSize)
+
+            // 保存路径
+            outputFiles.add(outputFile.absolutePath)
+        }
+
+        println("生成文件: ${outputFile.absolutePath}")
+        chunkIndex++
+        startByte += chunkSize
+    }
+
+    inputStream.close()
+    return outputFiles
+}
+
+/**
+ * 更新 WAV 头部信息（修正文件大小）
+ */
+fun updateWavHeader(file: File, dataSize: Int) {
+    RandomAccessFile(file, "rw").use { raf ->
+        val riffSize = dataSize + 36
+        val riffSizeBytes = ByteArray(4)
+        val dataSizeBytes = ByteArray(4)
+
+        for (i in 0..3) {
+            riffSizeBytes[i] = ((riffSize shr (i * 8)) and 0xFF).toByte()
+            dataSizeBytes[i] = ((dataSize shr (i * 8)) and 0xFF).toByte()
+        }
+
+        raf.seek(4)
+        raf.write(riffSizeBytes) // 更新 RIFF 块大小
+        raf.seek(40)
+        raf.write(dataSizeBytes) // 更新数据块大小
+    }
+}
+
+fun concatenateFiles(outputFile: File, inputFiles: List<File>) {
+    FileOutputStream(outputFile).use { outputStream ->
+        inputFiles.forEach { inputFile ->
+            inputFile.inputStream().use { inputStream ->
+                copyStream(inputStream, outputStream)
+            }
+        }
+    }
+}
+
+fun copyStream(inputStream: InputStream, outputStream: FileOutputStream) {
+    val buffer = ByteArray(1024)
+    var bytesRead: Int
+    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+        outputStream.write(buffer, 0, bytesRead)
+    }
 }
