@@ -2,12 +2,14 @@ package win.moez.zplayer
 
 import android.Manifest
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -27,6 +29,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
@@ -82,8 +85,6 @@ import java.net.URL
 import java.nio.ByteBuffer
 
 // TODO 整体翻译
-// TODO 全屏
-// TODO 横屏
 
 const val your_bucket_name = "moezplayer"
 const val split_len = 30
@@ -137,25 +138,42 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
     val player = remember { ExoPlayer.Builder(context).build() }
     var subtitleProgress by remember { mutableStateOf("未开始") }
     var subtitlePath by remember { mutableStateOf<String?>(null) }
+    var isFullScreen by remember { mutableStateOf(false) }
+
+    // 设置全屏模式
+    fun enterFullScreen() {
+        mainActivity.window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        mainActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+    }
+
+    // 退出全屏模式
+    fun exitFullScreen() {
+        mainActivity.window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+        mainActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        Button(onClick = { pickVideoLauncher.launch("video/*") }) {
-            Text("选择本地视频")
+        if (!isFullScreen) {
+            Button(onClick = { pickVideoLauncher.launch("video/*") }) {
+                Text("选择本地视频")
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // https://mirror.aarnet.edu.au/pub/TED-talks/911Mothers_2010W-480p.mp4
+            Button(onClick = {
+                mainActivity.videoUri =
+                    "https://stream7.iqilu.com/10339/upload_transcode/202002/09/20200209105011F0zPoYzHry.mp4".toUri()
+            }) {
+                Text("播放在线视频")
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(text = "字幕生成进度: $subtitleProgress", modifier = Modifier.padding(8.dp))
         }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // https://mirror.aarnet.edu.au/pub/TED-talks/911Mothers_2010W-480p.mp4
-        Button(onClick = {
-            mainActivity.videoUri =
-                "https://stream7.iqilu.com/10339/upload_transcode/202002/09/20200209105011F0zPoYzHry.mp4".toUri()
-        }) {
-            Text("播放在线视频")
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text(text = "字幕生成进度: $subtitleProgress", modifier = Modifier.padding(8.dp))
 
         mainActivity.videoUri?.let { uri ->
             LaunchedEffect(uri) {
@@ -173,10 +191,18 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
             AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(200.dp),
+                    .height(if (isFullScreen) LocalConfiguration.current.screenHeightDp.dp else 200.dp),
                 factory = { ctx ->
                     PlayerView(ctx).apply {
                         this.player = player
+
+                        useController = true
+
+                        // 监听全屏按钮点击
+                        setControllerOnFullScreenModeChangedListener { fullScreen ->
+                            isFullScreen = fullScreen
+                            if (fullScreen) enterFullScreen() else exitFullScreen()
+                        }
 
                         // 设置字幕样式
                         this.subtitleView?.let {
