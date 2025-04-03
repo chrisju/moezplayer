@@ -250,8 +250,8 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                     .pointerInput(Unit) {
                         detectTransformGestures { _, pan, zoom, _ ->
                             scale = (scale * zoom).coerceIn(0.5f, 3f)  // **缩放范围 0.5x ~ 3x**
-                            offsetX += pan.x  // **左右拖拽**
-                            offsetY += pan.y  // **上下拖拽**
+                            offsetX += scale * pan.x  // **左右拖拽**
+                            offsetY += scale * pan.y  // **上下拖拽**
                         }
                     }
                 ,
