@@ -11,6 +11,7 @@ import android.util.Log
 import android.util.TypedValue
 import android.view.View
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -34,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.IntOffset
@@ -155,7 +157,6 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
-    var isDragging by remember { mutableStateOf(false) }
 
     // 设置全屏模式
     fun enterFullScreen() {
@@ -201,7 +202,13 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                     Log.d("progress", "$progress")
                     subtitleProgress = progress
                     subtitlePath = path
-                    path?.let { mainActivity.runOnUiThread { loadSubtitle(player, it) } }
+                    path?.let {
+                        mainActivity.runOnUiThread {
+                            loadSubtitle(player, it)
+//                            Toast.makeText(mainActivity, "update subtitle", Toast.LENGTH_SHORT)
+//                                .show()
+                        }
+                    }
                 }
             }
 
@@ -218,22 +225,20 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                     .fillMaxWidth()
                     .height(if (isFullScreen) LocalConfiguration.current.screenHeightDp.dp else 200.dp)
                     .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) } // 拖拽偏移
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        translationX = offsetX,
+                        translationY = offsetY
+                    )
                     .pointerInput(Unit) {
                         detectTransformGestures { _, pan, zoom, _ ->
-                            if (player.isPlaying) return@detectTransformGestures // 只有暂停时才可操作
-
-                            scale = (scale * zoom).coerceIn(1f, 3f) // 限制缩放范围 1x - 3x
-                            if (isDragging) {
-                                offsetX += pan.x
-                                offsetY += pan.y
+                            if (!player.isPlaying) {  // **只在暂停时允许缩放和拖拽**
+                                scale = (scale * zoom).coerceIn(0.5f, 3f)  // **缩放范围 0.5x ~ 3x**
+                                offsetX += pan.x  // **左右拖拽**
+                                offsetY += pan.y  // **上下拖拽**
                             }
                         }
-                    }
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onPress = { isDragging = true }, // 按下开始拖拽
-                            onTap = { isDragging = false }  // 轻触取消拖拽状态
-                        )
                     }
                 ,
                 factory = { ctx ->
