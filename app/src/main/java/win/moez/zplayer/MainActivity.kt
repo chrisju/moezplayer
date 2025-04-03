@@ -104,7 +104,6 @@ const val split_len_minlast = 8
 const val font_size = 11f
 const val bottom_value = 0.005f     // 默认值是 0.08f，数值越大字幕越低。
 const val chunk_tims_ms = 50 * 1000L
-const val STATIC_INDEX = 0
 
 class MainActivity : ComponentActivity() {
 
@@ -198,7 +197,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                 player.prepare()
                 player.play()
                 extractAndProcessAudio(context, uri) { path, progress ->
-                    Log.d("progress", "extractAndProcessAudio:$progress")
+                    Log.d("progress", "$progress")
                     subtitleProgress = progress
                     subtitlePath = path
                     path?.let { mainActivity.runOnUiThread { loadSubtitle(player, it) } }
@@ -261,7 +260,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
     }
 }
 
-fun getAppSpecificFile(context: Context, fileName: String): File {
+fun getTmpFile(context: Context, fileName: String): File {
     val appSpecificDir = context.externalCacheDir
     return File(appSpecificDir, fileName)
 }
@@ -272,23 +271,24 @@ fun extractAndProcessAudio(
     videoUri: Uri,
     onProgress: (String?, String) -> Unit
 ) {
-    val localAudioPath = getAppSpecificFile(context, "output.wav").toString()
+    val externalDir = context.getExternalFilesDir(null)
+    val localAudioPath = getTmpFile(context, "output.wav").path
     val audioPaths = mutableListOf<String>()
     val srts = mutableListOf<File>()
     val credentialsStream: InputStream = context.resources.openRawResource(R.raw.a2t)
     val credentials = GoogleCredentials.fromStream(credentialsStream)
-    var transcriptFile :File
     var subtitlePath = ""
 
     GlobalScope.launch(Dispatchers.IO) {
         try {
             onProgress(null, "准备视频中...")
-            val videoPath = getVideoFile(context, videoUri)?.toString()
+            val videoPath = getVideoFile(context, videoUri)?.path
                 ?: throw IllegalArgumentException("无效的视频源")
             // 检查视频的字幕 hash.srt
-            val savedSrt = hashFile(context, generateFileHash(File(videoPath)))
+            val videoHash = generateFileHash(File(videoPath))
+            val savedSrt = hashFile(context, videoHash)
             if(savedSrt.exists()){
-                onProgress(savedSrt.toString(), "加载即存字幕！")
+                onProgress(savedSrt.path, "加载即存字幕！")
                 return@launch
             }
 
@@ -302,51 +302,62 @@ fun extractAndProcessAudio(
                 for (f in list) {
                     audioPaths.add(f)
                 }
-                Log.e("splitWavByMilliseconds", "分割数：${audioPaths.size}")
-            } else {
+                Log.d("splitWav", "分割数：${audioPaths.size}")
+            }
+            if (audioPaths.isEmpty()) {
                 audioPaths.add(localAudioPath)
             }
 
+            var transcriptFile :File
             val settings = SpeechSettings.newBuilder()
                 .setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build()
             val speechClient = SpeechClient.create(settings)
-            val staticValues = mutableListOf(10)
-            staticValues[STATIC_INDEX] = 0
-            for ((i, audioPath) in audioPaths.withIndex()) {
-                // 检查音频的字幕
-                val savedAudioSrt = hashFile(context, generateFileHash(File(audioPath)))
-                if(savedAudioSrt.exists()){
-                    // 更新 staticValues
-                    staticValues[STATIC_INDEX] = getSrtIndex(savedAudioSrt)
-                    continue
-                }
+            var subIndex = 0
 
+            // 检查既有音频字幕
+            val (cachedNum, cachedSrt) = loadCached(File(externalDir, "${videoHash}_cached.srt"))
+            if (cachedNum > 0 && cachedSrt != null) {
+                onProgress(cachedSrt, "加载即存音频字幕！")
+                subIndex = getSrtSubIndex(File(cachedSrt))
+                srts.add(getCleanSrtFile(context, cachedSrt))
+                subtitlePath = cachedSrt
+            }
+
+            for (i in cachedNum .. audioPaths.size - 1) {
+                val audioPath = audioPaths[i]
                 onProgress(null, "上传音频中...")
                 val remoteAudioPath = uploadAudioFile(audioPath, credentials)
 
                 onProgress(null, "识别字幕中...")
-                val srt = longRunningRecognize(context, remoteAudioPath, speechClient, i * chunk_tims_ms, staticValues)
+                val (tmp, srt) = longRunningRecognize(
+                    context,
+                    remoteAudioPath,
+                    speechClient,
+                    i * chunk_tims_ms,
+                    subIndex
+                )
+                subIndex = tmp
                 srts.add(srt)
+                Log.d("srts", "$i : $subIndex  $srts")
 
                 if(srts.size == 1){
                     transcriptFile = srts[0]
                 }else{
-                    val filename = localAudioPath.substringAfterLast('/')
-                    transcriptFile = getAppSpecificFile(context, "$filename.subtitles.srt")
+                    transcriptFile = getTmpFile(context, "${File(localAudioPath).name}.subtitles.srt")
                     concatenateFiles(transcriptFile, srts)
                 }
 
                 onProgress(null, "翻译字幕中...")
-                subtitlePath = translateSubtitleFile(context, transcriptFile).toString()
+                subtitlePath = translateSubtitleFile(context, transcriptFile).path
                 onProgress(subtitlePath, "字幕已生成！")
 
                 // 存储音频的字幕
-                saveFile(context, File(subtitlePath), generateFileHash(File(audioPath)))
+                saveFile(context, File(subtitlePath), videoHash, i + 1)
             }
             speechClient.close()
 
             // 存储视频的字幕 hash.srt
-            saveFile(context, File(subtitlePath), generateFileHash(File(videoPath)))
+            saveFile(context, File(subtitlePath), videoHash)
         } catch (e: Exception) {
             Log.e("SubtitleError", "字幕处理失败", e)
             onProgress(null, "字幕生成失败:$e")
@@ -359,10 +370,10 @@ fun longRunningRecognize(
     url: String,
     speechClient: SpeechClient,
     offset: Long,
-    staticValues: MutableList<Int>
-): File {
+    subIndex: Int
+): Pair<Int, File> {
     val filename = url.substringAfterLast('/')
-    val srtFile = getAppSpecificFile(context, "$filename.subtitles.srt")
+    val srtFile = getTmpFile(context, "$filename.subtitles.srt")
 
     val audio = RecognitionAudio.newBuilder()
         .setUri(url)
@@ -412,20 +423,19 @@ fun longRunningRecognize(
 //        .build()
 //    val response = speechClient.recognize(request)
 
-    generateSrtFile(response.resultsList, srtFile, offset, staticValues)
+    val index = generateSrtFile(response.resultsList, srtFile, offset, subIndex)
 
-
-    return srtFile
+    return Pair(index, srtFile)
 }
 
 fun generateSrtFile(
     results: List<SpeechRecognitionResult>,
     outputFile: File,
     offset: Long,
-    staticValues: MutableList<Int>
-) {
+    subIndex: Int
+): Int {
     val srtContent = StringBuilder()
-    var index = staticValues[STATIC_INDEX] + 1
+    var index = subIndex + 1
 
     Log.d("generateSrtFile", "sub1 1: ${results.size}")
     for (result in results) {
@@ -447,10 +457,11 @@ fun generateSrtFile(
             }
         }
     }
-    staticValues[STATIC_INDEX] = index - 1
 
-    Log.d("generateSrtFile", "sub1: $srtContent")
+//    Log.d("generateSrtFile", "sub1: $srtContent")
     outputFile.writeText(srtContent.toString())
+
+    return index - 1
 }
 
 fun splitWordsList(words: List<WordInfo>): List<List<WordInfo>> {
@@ -510,7 +521,6 @@ fun splitWordsList2(words: List<WordInfo>): List<List<WordInfo>> {
 fun splitLargeSegment(segment: List<WordInfo>): List<List<WordInfo>> {
     val transcript = segment.joinToString("") { it.word }
     splitTextIntoSentences(transcript){
-// TODO
     }
     val segments = mutableListOf<List<WordInfo>>()
     splitSegmentRecursively(segment, segments)
@@ -567,10 +577,12 @@ fun formatTime(duration: com.google.protobuf.Duration): String {
 }
 
 fun translateSubtitleFile(context: Context, srtFile: File): File {
-    val translatedFile = getAppSpecificFile(context, "translated.srt")
+    val translatedFile = getTmpFile(context, "${srtFile.name}.translated.srt")
     val translatedWriter = BufferedWriter(FileWriter(translatedFile))
 
     srtFile.forEachLine { line ->
+        if (line.isEmpty()) return@forEachLine
+
         if (line.matches(Regex("\\d+")) || line.contains("-->")) {
             translatedWriter.write(line + "\n")
         } else {
@@ -579,6 +591,7 @@ fun translateSubtitleFile(context: Context, srtFile: File): File {
         }
     }
     translatedWriter.close()
+
     return translatedFile
 }
 
@@ -593,7 +606,7 @@ fun translateText(text: String): String {
 
 fun loadSubtitle(player: ExoPlayer, subtitlePath: String) {
     var txt = File(subtitlePath).readText()
-    Log.d("loadSubtitle", "sub: $txt")
+//    Log.d("loadSubtitle", "sub:\n$txt")
 
     val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(subtitlePath.toUri())
         .setMimeType("application/x-subrip")
@@ -657,7 +670,7 @@ fun getFileName(uri: Uri): String? {
     var fileName: String? = null
     when (uri.scheme) {
         "content" -> {
-            uri.toString().split("/").lastOrNull()
+            fileName = uri.toString().split("/").lastOrNull()
         }
 
         "file" -> {
@@ -679,9 +692,9 @@ fun getFileName(uri: Uri): String? {
 fun getVideoFile(context: Context, uri: Uri): File? {
     val fileName = getFileName(uri) ?: "default_filename.mp4"
     return if (uri.toString().startsWith("content://")) {
-        copyUriToFile(context, uri, getAppSpecificFile(context, fileName))
+        copyUriToFile(context, uri, getTmpFile(context, fileName))
     } else if (isUrl(uri.toString())) {
-        downloadVideo(uri, getAppSpecificFile(context, fileName))
+        downloadVideo(uri, getTmpFile(context, fileName))
     } else if (File(uri.toString()).exists()) {
         File(uri.toString())
     } else {
@@ -914,31 +927,33 @@ fun generateFileHash(file: File): String {
         }
     }
     val hashBytes = digest.digest()
-    return hashBytes.joinToString("") { "%02x".format(it) }
+    val hash = hashBytes.joinToString("") { "%02x".format(it) }
+    Log.d("generateFileHash", "${file.path}: $hash")
+    return hash
 }
-
 
 fun hashFile(context: Context, hash: String): File {
     val externalDir = context.getExternalFilesDir(null)
     return File(externalDir, "$hash.srt")
 }
-fun saveFile(context: Context, sourceFile: File, hash: String) {
+
+fun saveFile(context: Context, sourceFile: File, hash: String, i: Int = -1): File {
     val externalDir = context.getExternalFilesDir(null)
-    try {
-        val destFile = File(externalDir, "$hash.srt")
-        sourceFile.inputStream().use { input ->
-            destFile.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-        Log.d("zplayer", "File copied successfully to: ${destFile.absolutePath}")
-    } catch (e: IOException) {
-        e.printStackTrace()
-        Log.d("zplayer", "Failed to copy file: ${e.message}")
+    val destFile =
+        if (i == -1) File(externalDir, "$hash.srt") else File(externalDir, "${hash}_${i}.srt")
+    if (i != -1) {
+        File(externalDir, "${hash}_cached.srt").writeText(destFile.path)
     }
+    sourceFile.inputStream().use { input ->
+        destFile.outputStream().use { output ->
+            input.copyTo(output)
+        }
+    }
+    Log.d("zplayer", "File copied successfully to: ${destFile.absolutePath}")
+    return destFile
 }
 
-fun getSrtIndex(file: File): Int {
+fun getSrtSubIndex(file: File): Int {
     var lastNumericLine = "0"
 
     if (file.exists()) {
@@ -952,4 +967,42 @@ fun getSrtIndex(file: File): Int {
         }
     }
     return lastNumericLine.toInt()
+}
+
+fun loadCached(file: File): Pair<Int, String?> {
+    if (!file.exists()) {
+        return Pair(0, null)
+    }
+
+    val path = file.readText().trim()
+    if (!File(path).exists()) {
+        return Pair(0, null)
+    }
+
+    val fileName = File(path).nameWithoutExtension
+    val lastPart = fileName.substringAfterLast('_')
+
+    return return Pair(lastPart.toInt(), path)
+}
+
+fun getCleanSrtFile(context: Context, path: String): File {
+    val inputFile = File(path)
+    val outputFile = getTmpFile(context, "cleaned_${inputFile.name}")
+
+    if (!inputFile.exists()) {
+        throw IllegalArgumentException("输入文件不存在")
+    }
+
+    val lines = inputFile.readLines()
+    val cleanedLines = mutableListOf<String>()
+
+    for (i in lines.indices step 5) {
+        if (i < lines.size) cleanedLines.add(lines[i]) // 第1行
+        if (i + 1 < lines.size) cleanedLines.add(lines[i + 1]) // 第2行
+        if (i + 3 < lines.size) cleanedLines.add(lines[i + 3]) // 第4行
+        if (i + 4 < lines.size) cleanedLines.add(lines[i + 4]) // 第5行
+    }
+
+    outputFile.writeText(cleanedLines.joinToString("\n"))
+    return outputFile
 }
