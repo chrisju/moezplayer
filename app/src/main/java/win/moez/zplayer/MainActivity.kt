@@ -263,7 +263,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
 
                         setOnTouchListener { _, event ->
                             scaleGestureDetector.onTouchEvent(event) // 将触摸事件传递给 ScaleGestureDetector
-                            true
+                            return@setOnTouchListener false
                         }
 
                         // 监听全屏按钮点击
