@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
 import android.view.View
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -201,6 +202,14 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                     subtitleProgress = progress
                     subtitlePath = path
                     path?.let { mainActivity.runOnUiThread { loadSubtitle(player, it) } }
+                }
+            }
+
+            LaunchedEffect(player.isPlaying) {
+                if (player.isPlaying) {
+                    mainActivity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    mainActivity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 }
             }
 
@@ -605,7 +614,7 @@ fun translateText(text: String): String {
 }
 
 fun loadSubtitle(player: ExoPlayer, subtitlePath: String) {
-    var txt = File(subtitlePath).readText()
+//    var txt = File(subtitlePath).readText()
 //    Log.d("loadSubtitle", "sub:\n$txt")
 
     val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(subtitlePath.toUri())
