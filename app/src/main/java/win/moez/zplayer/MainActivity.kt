@@ -9,21 +9,19 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.WindowManager
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
@@ -38,7 +36,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
@@ -95,7 +92,6 @@ import java.net.MalformedURLException
 import java.net.URL
 import java.nio.ByteBuffer
 import java.security.MessageDigest
-import kotlin.math.roundToInt
 
 // TODO 整体翻译
 // TODO 自然分句
@@ -172,6 +168,27 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
         mainActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
 
+    val scaleGestureDetector = remember {
+        ScaleGestureDetector(mainActivity, object : ScaleGestureDetector.OnScaleGestureListener {
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                return true // 表示开始缩放
+            }
+
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                detector?.let {
+                    val scaleFactor = it.scaleFactor
+                    // 处理缩放
+                    scale *= scaleFactor
+                }
+                return true
+            }
+
+            override fun onScaleEnd(detector: ScaleGestureDetector) {
+                // 缩放结束时可以处理一些逻辑
+            }
+        })
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         if (!isFullScreen) {
             Button(onClick = { pickVideoLauncher.launch("video/*") }) {
@@ -224,7 +241,6 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(if (isFullScreen) LocalConfiguration.current.screenHeightDp.dp else 200.dp)
-                    .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) } // 拖拽偏移
                     .graphicsLayer(
                         scaleX = scale,
                         scaleY = scale,
@@ -233,11 +249,9 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                     )
                     .pointerInput(Unit) {
                         detectTransformGestures { _, pan, zoom, _ ->
-                            if (!player.isPlaying) {  // **只在暂停时允许缩放和拖拽**
-                                scale = (scale * zoom).coerceIn(0.5f, 3f)  // **缩放范围 0.5x ~ 3x**
-                                offsetX += pan.x  // **左右拖拽**
-                                offsetY += pan.y  // **上下拖拽**
-                            }
+                            scale = (scale * zoom).coerceIn(0.5f, 3f)  // **缩放范围 0.5x ~ 3x**
+                            offsetX += pan.x  // **左右拖拽**
+                            offsetY += pan.y  // **上下拖拽**
                         }
                     }
                 ,
@@ -246,6 +260,11 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                         this.player = player
 
                         useController = true
+
+                        setOnTouchListener { _, event ->
+                            scaleGestureDetector.onTouchEvent(event) // 将触摸事件传递给 ScaleGestureDetector
+                            true
+                        }
 
                         // 监听全屏按钮点击
                         setControllerOnFullScreenModeChangedListener { fullScreen ->
