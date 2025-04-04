@@ -12,7 +12,9 @@ import android.util.TypedValue
 import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -77,6 +79,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import win.moez.zplayer.MainActivity
 import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.File
@@ -95,7 +98,10 @@ import java.security.MessageDigest
 
 // TODO 整体翻译
 // TODO 自然分句
-// TODO 缓存识别结果
+// TODO 使用基于cloud functions的API
+// TODO 添加设置:是否播放时独占音频
+// TODO 清空缩放和拖曳
+// TODO 添加设置:是否进入后台时暂停
 
 const val your_bucket_name = "moezplayer"
 const val split_len = 30
@@ -111,6 +117,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
 
         pickVideoLauncher =
             registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -154,6 +161,9 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
 
+    var backPressedTime: Long = 0
+    lateinit var toast: Toast
+
     // 设置全屏模式
     fun enterFullScreen() {
         mainActivity.window.decorView.systemUiVisibility =
@@ -167,6 +177,29 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
         mainActivity.window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
         mainActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
+
+    // 添加 OnBackPressedCallback
+    val callback = object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() {
+            if (isFullScreen) {
+                isFullScreen = false
+                exitFullScreen()
+            } else {
+                val currentTime = System.currentTimeMillis()
+                if (currentTime - backPressedTime < 2000) {
+                    toast.cancel()
+                    mainActivity.finish()
+                } else {
+                    toast = Toast.makeText(mainActivity, "再按一次返回键退出", Toast.LENGTH_SHORT)
+                    toast.show()
+                    backPressedTime = currentTime
+                }
+            }
+        }
+    }
+
+    // 将回调添加到 OnBackPressedDispatcher
+    mainActivity.onBackPressedDispatcher.addCallback(mainActivity, callback)
 
     val scaleGestureDetector = remember {
         ScaleGestureDetector(mainActivity, object : ScaleGestureDetector.OnScaleGestureListener {
@@ -216,7 +249,7 @@ fun VideoPlayerApp(mainActivity: MainActivity, pickVideoLauncher: ActivityResult
                 player.prepare()
                 player.play()
                 extractAndProcessAudio(context, uri) { path, progress ->
-                    Log.d("progress", "$progress")
+                    Log.d("progress", progress)
                     subtitleProgress = progress
                     subtitlePath = path
                     path?.let {
